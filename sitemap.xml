@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url>
+        <loc>https://decompilers-n-stuff.github.io/</loc>
+    </url>
+    <url>
+        <loc>https://decompilers-n-stuff.github.io/about/</loc>
+        <lastmod>2024-02-18</lastmod>
+    </url>
+    <url>
+        <loc>https://decompilers-n-stuff.github.io/blocks/</loc>
+        <lastmod>2024-02-20</lastmod>
+    </url>
+    <url>
+        <loc>https://decompilers-n-stuff.github.io/langdefs/</loc>
+        <lastmod>2024-02-19</lastmod>
+    </url>
+</urlset>

@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta http-equiv="content-type" content="text/html; charset=utf-8">
+
+    <!-- Enable responsiveness on mobile devices-->
+    <!-- viewport-fit=cover is to support iPhone X rounded corners and notch in landscape-->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, viewport-fit=cover">
+
+    <title>Decompilers &#x27;n Stuff</title>
+
+    <!-- CSS -->
+    <link rel="stylesheet" href="https://decompilers-n-stuff.github.io/colors-dark.css">
+
+    
+
+    
+    
+  </head>
+  <body>
+    <header id="header">
+      <h1><a href="https:&#x2F;&#x2F;decompilers-n-stuff.github.io">Decompilers &#x27;n Stuff</a></h1>
+      <p>Experiments in decompilation</p>
+    </header>
+    <div id="page">
+      <div id="sidebar">
+        
+          
+          <nav>
+            <ul class="nav">
+              
+                
+                  <li>
+                    <a href="&#x2F;about"><span>About</span></a>
+                  </li>
+                
+                  <li>
+                    <a href="rss.xml"><span>RSS</span></a>
+                  </li>
+                
+              
+            </ul>
+          </nav>
+          
+        
+      </div>
+      <div id="content">
+        
+<article class="post">
+  <h1><a href="https:&#x2F;&#x2F;decompilers-n-stuff.github.io&#x2F;langdefs&#x2F;">A DSL for generating source code</a></h1>
+
+  <div class="post-content"><p>One of the reasons I want to write a decompiler is to be able to decompile languages other than C. Although many languages descend from C and therefore their decompiler should inherit much of the same logic from a C decompiler.</p>
+<span id="continue-reading"></span>
+<p>Therefore, just like how decompilers lift machine code from different architectures into a common intermediate representation (IR), I want to create an IR that can be used to generate any programming language.</p>
+<p>Then, similarly to Ghidra's <a href="https://spinsel.dev/assets/2020-06-17-ghidra-brainfuck-processor-1/ghidra_docs/language_spec/html/sleigh.html">SLEIGH</a>, I can create a domain-specific language (DSL) which transforms the higher-level IR (basically just an AST) to a syntax tree for the target programming language.</p>
+<h2 id="c-specification">C Specification</h2>
+<p>To see how this works, here's part of the DSL specification for <code>C</code>:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>c_block:
+</span><span>    repr: ${*statements&lt;CR&gt;}
+</span><span>    statements: statement*
+</span><span>    from: AST_BLOCK
+</span><span>
+</span><span>
+</span><span>block: (c_block)
+</span><span>
+</span><span>
+</span><span>function:
+</span><span>    repr:
+</span><span>    ```
+</span><span>    $return_type $name(${*params&lt;, &gt;}) {
+</span><span>        $body
+</span><span>    }
+</span><span>    ```
+</span><span>    name: symbol
+</span><span>    return_type: datatype
+</span><span>    params: variable*
+</span><span>    body: block
+</span><span>    from: AST_FUNC
+</span></code></pre>
+<p>Each node in the concrete syntax tree (CST) has a couple of key attributes:</p>
+<ul>
+<li><code>repr</code> which tells the decompiler how to display the node.</li>
+<li><code>from</code> which specifies how to create the node from the AST.</li>
+</ul>
+<p>The children (i.e. <code>name</code>, <code>return_type</code>, etc. for <code>function</code>) are also defined as attributes of the node where the value is the CST node type to transform children of the same name of the AST node into. Keying off of the names is admittedly a bit hacky and I intend to change that in the future.</p>
+<p>Top-level nodes can also be declared as an enumeration (sum type?) of other CST nodes. For example, here's the declaration for the <code>statement</code> type used above:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>statement: (decl_assign | assign | decl 
+</span><span>         | void_stmt | return | label_decl
+</span><span>         | goto | break | continue
+</span><span>         | if | ifelse | loop)
+</span></code></pre>
+<p>In addition, nodes can optionally have a <code>references</code> attribute to enable decompiled code navigation in a hypothetical GUI I haven't yet written:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>call_target:
+</span><span>    from: ast_symbol
+</span><span>    references: addrof($self)
+</span><span>
+</span><span>
+</span><span>call:
+</span><span>    repr: $target(${*params&lt;, &gt;})
+</span><span>    target: call_target
+</span><span>    params: expr*
+</span></code></pre>
+<p>As you can see, I've also defined some primitive helper functions like <code>addrof</code> (and <code>typeof</code>, <code>sizeof</code>, etc.) that can be used in the specification.</p>
+<h2 id="extending-to-objective-c">Extending to Objective-C</h2>
+<p>Decompiling a function written in Objective-C using the C specification, we see something very similar to what ghidra produces (albeit with a worse parameter detection algorithm):</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>uint64_t -[SPTDiskCache initWithCapacity:](p1, p2, p3) {
+</span><span>    uint64_t v1 = p1;
+</span><span>    uint64_t v2 = _OBJC_CLASS_$_SPTDiskCache;
+</span><span>    uint64_t v3 = FUN_4240e(&amp;v1, &quot;init&quot;);
+</span><span>    if (v3 != 0x0) {
+</span><span>        uint64_t v4 = (*(_objc_msgSend))(_OBJC_CLASS_$_SPTDiskCache, &quot;amountOfFreeSpaceTotal&quot;);
+</span><span>        if (v4 &gt; p3) {
+</span><span>            v4 = p3;
+</span><span>        }
+</span><span>        *(v3 + _OBJC_IVAR_$_SPTDiskCache._capacity) = v4;
+</span><span>        uint64_t v5 = *(v3 + _OBJC_IVAR_$_SPTDiskCache._resources);
+</span><span>        *(v3 + _OBJC_IVAR_$_SPTDiskCache._resources) = _objc_retainAutoreleasedReturnValue((*(_objc_msgSend))(_OBJC_CLASS_$_NSMutableDictionary, &quot;dictionaryWithCapacity:&quot;, 0x4, _OBJC_IVAR_$_SPTDiskCache._capacity), &quot;dictionaryWithCapacity:&quot;, _OBJC_IVAR_$_SPTDiskCache._capacity);
+</span><span>        (_objc_release)(v5, &quot;dictionaryWithCapacity:&quot;, _OBJC_IVAR_$_SPTDiskCache._resources);
+</span><span>        uint64_t v6 = _objc_retainAutoreleasedReturnValue((*(_objc_msgSend))(_OBJC_CLASS_$_NSFileManager, &quot;defaultManager&quot;, _OBJC_IVAR_$_SPTDiskCache._resources), &quot;defaultManager&quot;, _OBJC_IVAR_$_SPTDiskCache._resources);
+</span><span>        uint64_t v7 = _objc_retainAutoreleasedReturnValue((*(_objc_msgSend))(_OBJC_CLASS_$_SPTDiskCache, &quot;getCacheFolder&quot;, _OBJC_IVAR_$_SPTDiskCache._resources), &quot;getCacheFolder&quot;, _OBJC_IVAR_$_SPTDiskCache._resources);
+</span><span>        uint64_t v8 = 0x0;
+</span><span>        uint64_t v9;
+</span><span>        if ((*(_objc_msgSend))(v6, &quot;fileExistsAtPath:isDirectory:&quot;, v7, v8) == 0x0) {
+</span><span>            v9 = 0x0;
+</span><span>            v8 = 0x0;
+</span><span>            uint64_t v10 = 0x0;
+</span><span>            (_objc_msgSend)(v6, &quot;createDirectoryAtPath:withIntermediateDirectories:attributes:error:&quot;, v7, v8, v10, &amp;v9);
+</span><span>        }
+</span><span>        v5 = *(v3 + _OBJC_IVAR_$_SPTDiskCache._cacheDirectory);
+</span><span>        *(v3 + _OBJC_IVAR_$_SPTDiskCache._cacheDirectory) = v7;
+</span><span>        (_objc_release)(v5, v8, v10, &amp;v9);
+</span><span>        (_objc_release)(v6, v8, v10, &amp;v9);
+</span><span>    }
+</span><span>    return v3;
+</span><span>}
+</span></code></pre>
+<p>For reference, here's Ghidra's decompilation:</p>
+<p><img src="/ghidra_objc_9078.png" alt="ghidra_objc_9078" /></p>
+<p>There are a lot of problems with my output. We can fix them one-by-one by creating a new language specification for Objective-C.</p>
+<h3 id="method-calls">Method Calls</h3>
+<p>The first and most obvious one is method calls.</p>
+<p>Since Objective-C is based on Smalltalk, methods use dynamic dispatch and are called by passing a message (selector in ObjC parlance) to a receiver. The function <code>objc_msgSend</code> performs that dispatch but the Objective-C programmer would simply write the code <code>[foo bar:param1 andParam:param2]</code>.</p>
+<p>To transform the call to <code>objc_msgSend</code> to the correct syntax (and fixup the reference), we declare the following node:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>@import c
+</span><span>
+</span><span>...
+</span><span>
+</span><span>
+</span><span>indirect_method_call:
+</span><span>    from:
+</span><span>    ```
+</span><span>    AST_INDIRECT_CALL
+</span><span>    |
+</span><span>    +--- _ =&gt; $target: $self --&gt; _objc_msgSend
+</span><span>    +--- _ =&gt; $receiver
+</span><span>    +--- _ =&gt; $selector
+</span><span>    +--- * =&gt; $args
+</span><span>    ```
+</span><span>    target: expr
+</span><span>    receiver: expr
+</span><span>    selector: string
+</span><span>    args: expr*
+</span><span>    repr: [$receiver ${format_method_args(selector, args)}]
+</span><span>    references: addrof(get_method_imp(typeof($receiver), $selector))
+</span><span>    priority: 0
+</span><span>    post_actions:
+</span><span>        * set_callsite_num_params($target, get_num_args($selector))
+</span><span>
+</span><span>method_call: (indirect_method_call)
+</span><span>expr: (method_call | expr)
+</span></code></pre>
+<p>Here is the first example of a more complex <code>from</code> attribute. The only examples I showed earlier just matched the CST node from the AST node type; however, in actuality, the value of the <code>from</code> attribute is a template to match on an AST subtree.</p>
+<p>In <code>indirect_method_call</code>'s <code>from</code>, we use this weird ascii-tree to specify constraints on the AST's children and bind variables. This syntax is sort of gross but I also sort of like it (I mean duh I created it).</p>
+<p>The first child template of the <code>AST_INDIRECT_CALL</code> template is <code>_ =&gt; $target: $self --&gt; _objc_msgSend</code>. Here the <code>_</code> just means match any AST node type. The <code>=&gt; $target</code> then binds this child to a variable named <code>target</code> that you can reference in the node's attributes. After binding, you can optionally specify a constraint, e.g. <code>: $self --&gt; _objc_msgSend</code>. Every constraint has the AST node being evaluated bound to <code>self</code> automatically and the <code>--&gt;</code> operator specifies a &quot;points to&quot; operation. </p>
+<p>After matching on/binding to the the target, receiver, and selector, we use <code>*</code> to bind the rest of the children to <code>args</code>.</p>
+<p>Note in the <code>repr</code> and <code>references</code> attributes, the functions <code>format_method_args</code> and <code>get_method_imp</code> are respectively called. These are escape hatches into little Python utility functions you can define in another file. I don't really like this but it seems like the more pragmatic solution for now instead of trying to make this DSL a full-fledged programming language.</p>
+<p>There's also a new attribute on this node: <code>post_actions</code>. The value of this attribute is a list of actions to be run after this node is created. For the <code>indirect_method_call</code> node, we want to set the number of parameters at the callsite to the number of parameters parsed from the selector string. This is a pattern we'll see more later of in the post: information is gained from the node being interpreted as Objective-C which informs earlier parts of the analysis (like parameter detection). Therefore, each action returns point in the repr chain (here repr means representation of the function -- sorry for the overloaded term) to recompute from.</p>
+<p>Here's what I mean for the action in question:</p>
+<pre data-lang="python" style="background-color:#042029;color:#839496;" class="language-python "><code class="language-python" data-lang="python"><span style="color:#859900;">class </span><span style="color:#268bd2;">SetCallsiteNumParams</span><span>(Action):
+</span><span>	</span><span style="color:#b58900;">...
+</span><span>
+</span><span>    </span><span style="color:#859900;">def </span><span style="color:#268bd2;">execute_with</span><span>(self, cst):
+</span><span>        num_params </span><span style="color:#859900;">= int</span><span>(</span><span style="color:#268bd2;">self</span><span>.num_params_expr.expand_with(cst))
+</span><span>        call_expr </span><span style="color:#859900;">= </span><span>cst.prev.prev
+</span><span>
+</span><span>        </span><span style="color:#859900;">for </span><span>user </span><span style="color:#859900;">in </span><span>call_expr.uses:
+</span><span>            CallOp.</span><span style="color:#268bd2;">NUM_PARAMS</span><span>[user.seq] </span><span style="color:#859900;">= </span><span>num_params
+</span><span>
+</span><span>        r </span><span style="color:#859900;">= </span><span>cst.root.prev.ast
+</span><span>
+</span><span>        </span><span style="color:#859900;">while not </span><span>r.is_cfg() </span><span style="color:#859900;">or not </span><span>r.is_pcode_graph() </span><span style="color:#859900;">or </span><span>r.is_ssa():
+</span><span>            r </span><span style="color:#859900;">= </span><span>r.prev
+</span><span>
+</span><span>        </span><span style="color:#859900;">return </span><span>r.repr_depth
+</span></code></pre>
+<p>This does make this phase of the decompilation very inefficient since we're basically decompiling the same function multiple times. Moreso, new information can be gained on re-decompilation that forces another re-decompile. There is more to be done to smart about what/when to re-decompile and I haven't noticed lag yet but I'm sure it will affect larger functions.</p>
+<p>The last thing to note is this line:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>expr: (method_call | expr)
+</span></code></pre>
+<p>Here I'm extending the <code>expr</code> node type defined in the <code>C</code> specification file to include <code>method_call</code> node. Putting it before <code>expr</code> (which will expand to the previously defined enum) will make it so the decompiler attempts to match <code>method_call</code> on any <code>AST_INDIRECT_CALL</code> before anything defined in the <code>C</code> spec. You can also put a <code>priority</code> attribute on the node which does the same thing.</p>
+<p>Decompiling again with the <code>method_call</code> node defined produces the following output:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>uint64_t -[SPTDiskCache initWithCapacity:](p1, p2, p3) {
+</span><span>    uint64_t v1 = p1;
+</span><span>    uint64_t v2 = _OBJC_CLASS_$_SPTDiskCache;
+</span><span>    uint64_t v3 = FUN_4240e(&amp;v1, &quot;init&quot;);
+</span><span>    if (v3 != 0x0) {
+</span><span>        uint64_t v4 = [_OBJC_CLASS_$_SPTDiskCache amountOfFreeSpaceTotal];
+</span><span>        if (v4 &gt; p3) {
+</span><span>            v4 = p3;
+</span><span>        }
+</span><span>        *(v3 + _OBJC_IVAR_$_SPTDiskCache._capacity) = v4;
+</span><span>        uint64_t v5 = *(v3 + _OBJC_IVAR_$_SPTDiskCache._resources);
+</span><span>        *(v3 + _OBJC_IVAR_$_SPTDiskCache._resources) = _objc_retainAutoreleasedReturnValue([_OBJC_CLASS_$_NSMutableDictionary dictionaryWithCapacity:0x4], &quot;dictionaryWithCapacity:&quot;, _OBJC_IVAR_$_SPTDiskCache._capacity);
+</span><span>        (_objc_release)(v5, &quot;dictionaryWithCapacity:&quot;, _OBJC_IVAR_$_SPTDiskCache._resources);
+</span><span>        uint64_t v6 = _objc_retainAutoreleasedReturnValue([_OBJC_CLASS_$_NSFileManager defaultManager], &quot;defaultManager&quot;);
+</span><span>        uint64_t v7 = _objc_retainAutoreleasedReturnValue([_OBJC_CLASS_$_SPTDiskCache getCacheFolder], &quot;getCacheFolder&quot;);
+</span><span>        uint64_t v8 = 0x0;
+</span><span>        uint64_t v9;
+</span><span>        if ([v6 fileExistsAtPath:v7 isDirectory:v8] == 0x0) {
+</span><span>            v9 = 0x0;
+</span><span>            v8 = 0x0;
+</span><span>            uint64_t v10 = 0x0;
+</span><span>            [v6 createDirectoryAtPath:v7 withIntermediateDirectories:v8 attributes:v10 error:&amp;v9];
+</span><span>        }
+</span><span>        v5 = *(v3 + _OBJC_IVAR_$_SPTDiskCache._cacheDirectory);
+</span><span>        *(v3 + _OBJC_IVAR_$_SPTDiskCache._cacheDirectory) = v7;
+</span><span>        (_objc_release)(v5, v8, v10, &amp;v9);
+</span><span>        (_objc_release)(v6, v8, v10, &amp;v9);
+</span><span>    }
+</span><span>    return v3;
+</span><span>}
+</span></code></pre>
+<p>Better, but there's still a lot we can do.</p>
+<h3 id="retain-release">Retain/Release</h3>
+<p>Like Python, Objective-C is a reference counted language. Therefore, the compiler inserts calls to increment/decrement the reference count to determine when a value should be freed. In Objective-C these increment/decrement calls are <code>objc_retain</code> and <code>objc_release</code>. There are also some other ones for specific scenarios like <code>objc_retainAutoreleasedReturnValue</code>.</p>
+<p>These calls are strictly noise in the decompiled output so we should remove them.</p>
+<p>We can do that by defining the following nodes:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>indirect_retain:
+</span><span>    from:
+</span><span>    ```
+</span><span>    AST_INDIRECT_CALL
+</span><span>    |
+</span><span>    +--- _ =&gt; $target: $self --&gt; _objc_retain
+</span><span>    +--- _ =&gt; $retained_var
+</span><span>    +--- *
+</span><span>    ```
+</span><span>    target: expr
+</span><span>    retained_var: expr
+</span><span>    repr: $retained_var
+</span><span>    priority: 0
+</span><span>    post_actions:
+</span><span>        * set_num_params($target, 1)
+</span><span>
+</span><span>
+</span><span>direct_autoretain:
+</span><span>    from:
+</span><span>    ```
+</span><span>    AST_CALL
+</span><span>    |
+</span><span>    +--- _ =&gt; $target: $self == _objc_retainAutoreleasedReturnValue
+</span><span>    +--- _ =&gt; $retained_var
+</span><span>    +--- *
+</span><span>    ```
+</span><span>    target: expr
+</span><span>    retained_var: expr
+</span><span>    repr: $retained_var
+</span><span>    priority: 0
+</span><span>    post_actions:
+</span><span>        * set_num_params($target, 1)
+</span><span>
+</span><span>
+</span><span>indirect_release:
+</span><span>    from:
+</span><span>    ```
+</span><span>    AST_INDIRECT_CALL
+</span><span>    |
+</span><span>    +--- _ =&gt; $target: $self --&gt; _objc_release
+</span><span>    +--- _ =&gt; $released_var
+</span><span>    +--- *
+</span><span>    ```
+</span><span>    target: expr
+</span><span>    released_var: expr
+</span><span>    post_actions:
+</span><span>        * set_num_params($target, 1)
+</span><span>
+</span><span>
+</span><span>indirect_release_stmt:
+</span><span>    from:
+</span><span>    ```
+</span><span>    AST_VOID_STMT
+</span><span>    |
+</span><span>    +--- indirect_release =&gt; $expr
+</span><span>    ```
+</span><span>    expr: indirect_release
+</span><span>    repr: &lt;EMPTY&gt;
+</span><span>    priority: 0
+</span><span>    post_actions:
+</span><span>        * delete($self)
+</span><span>
+</span><span>retain: (indirect_retain)
+</span><span>autoretain: (direct_autoretain)
+</span><span>release_stmt: (indirect_release_stmt)
+</span><span>
+</span><span>expr: (retain | autoretain | expr)
+</span><span>statement: (release_stmt | statement)
+</span></code></pre>
+<p>Most of these follow pretty straightforward from the previous example but there's some differences in <code>indirect_release_stmt</code>.</p>
+<p>This is because there is <code>objc_release</code> has no return value so the following lines show up in the decompiler:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>(_objc_release)(v5, v8, v10, &amp;v9);
+</span><span>(_objc_release)(v6, v8, v10, &amp;v9);
+</span></code></pre>
+<p>For <code>indirect_retain</code>, the call to <code>objc_retain</code> will be the right hand side of an ASSIGN node, so for its <code>repr</code>, we can just display the passed parameter. However, <code>indirect_release</code> will be a part of an AST_VOID_STMT instead and therefore we need to create a wrapper node for this AST type which matches an <code>indirect_release</code> and displays nothing for the <code>repr</code>. This is sort of ugly and I'd love to figure out a more elegant/concise way of doing this but I couldn't.</p>
+<p><code>indirect_release_stmt</code> also has a <code>post_action</code> of <code>delete</code>. This tells the decompiler when re-decompiling to not produce any statements for this node. I don't know if this it's a good decision to hide some statements/expressions form the user but that's sort of the whole point of this endeavor.</p>
+<p>With the new nodes, the decompiled code is much much cleaner:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>uint64_t -[SPTDiskCache initWithCapacity:](p1, p2, p3) {
+</span><span>    uint64_t v1 = p1;
+</span><span>    uint64_t v2 = _OBJC_CLASS_$_SPTDiskCache;
+</span><span>    uint64_t v3 = FUN_4240e(&amp;v1, &quot;init&quot;);
+</span><span>    if (v3 != 0x0) {
+</span><span>        uint64_t v4 = [_OBJC_CLASS_$_SPTDiskCache amountOfFreeSpaceTotal];
+</span><span>        if (v4 &gt; p3) {
+</span><span>            v4 = p3;
+</span><span>        }
+</span><span>        *(v3 + _OBJC_IVAR_$_SPTDiskCache._capacity) = v4;
+</span><span>        *(v3 + _OBJC_IVAR_$_SPTDiskCache._resources) = [_OBJC_CLASS_$_NSMutableDictionary dictionaryWithCapacity:0x4];
+</span><span>        uint64_t v5 = [_OBJC_CLASS_$_NSFileManager defaultManager];
+</span><span>        uint64_t v6 = [_OBJC_CLASS_$_SPTDiskCache getCacheFolder];
+</span><span>        if ([v5 fileExistsAtPath:v6 isDirectory:0x0] == 0x0) {
+</span><span>            uint64_t v7 = 0x0;
+</span><span>            uint64_t v8 = 0x0;
+</span><span>            uint64_t v9 = 0x0;
+</span><span>            [v5 createDirectoryAtPath:v6 withIntermediateDirectories:v8 attributes:v9 error:&amp;v7];
+</span><span>        }
+</span><span>        *(v3 + _OBJC_IVAR_$_SPTDiskCache._cacheDirectory) = v6;
+</span><span>    }
+</span><span>    return v3;
+</span><span>}
+</span></code></pre>
+<h3 id="finishing-touches">Finishing Touches</h3>
+<p>Adding a few more nodes for things like properties and ObjC symbols, we can produce the following decompilation:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>uint64_t -[SPTDiskCache initWithCapacity:p3] {
+</span><span>    uint64_t v1 = p1;
+</span><span>    SPTDiskCache * v2 = SPTDiskCache;
+</span><span>    uint64_t v3 = FUN_4240e(&amp;v1, &quot;init&quot;);
+</span><span>    if (v3 != 0x0) {
+</span><span>        uint64_t v4 = [SPTDiskCache amountOfFreeSpaceTotal];
+</span><span>        if (v4 &gt; p3) {
+</span><span>            v4 = p3;
+</span><span>        }
+</span><span>        v3.capacity = v4;
+</span><span>        v3.resources = [NSMutableDictionary dictionaryWithCapacity:0x4];
+</span><span>        uint64_t v5 = [NSFileManager defaultManager];
+</span><span>        uint64_t v6 = [SPTDiskCache getCacheFolder];
+</span><span>        if ([v5 fileExistsAtPath:v6 isDirectory:0x0] == 0x0) {
+</span><span>            uint64_t v7 = 0x0;
+</span><span>            uint64_t v8 = 0x0;
+</span><span>            uint64_t v9 = 0x0;
+</span><span>            [v5 createDirectoryAtPath:v6 withIntermediateDirectories:v8 attributes:v9 error:&amp;v7];
+</span><span>        }
+</span><span>        v3.cacheDirectory = v6;
+</span><span>    }
+</span><span>    return v3;
+</span><span>}
+</span></code></pre>
+<p>This looks pretty good in my opinion. Especially when compared to the initial C decompilation.</p>
+<h3 id="final-thoughts">Final Thoughts</h3>
+<p>This DSL is very clearly a rough draft. The syntax/semantics are a bit weird and it takes more lines than I would like to create new nodes. Also, I'm sure I'll eventually encounter some features of some languages that totally don't fit into this paradigm and I'll have to rework everything.</p>
+<p>That being said, I'm quite happy with the result here and think this has the potential to be very useful in the future.</p>
+</div>
+
+  <p class="meta">Posted on <span class="postdate">2024-02-19</span></p>
+</article>
+
+      </div>
+      <footer id="footer">
+        <p class="copyright">
+          
+            Powered by <a href="https://www.getzola.org/">Zola</a> and the
+            <a href="https://github.com/hulufei/solar-theme-zola">Solar</a>-theme.
+          
+        </p>
+      </footer>
+    </div>
+  </body>
+</html>

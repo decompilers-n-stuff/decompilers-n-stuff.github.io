@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta http-equiv="content-type" content="text/html; charset=utf-8">
+
+    <!-- Enable responsiveness on mobile devices-->
+    <!-- viewport-fit=cover is to support iPhone X rounded corners and notch in landscape-->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, viewport-fit=cover">
+
+    <title>Decompilers &#x27;n Stuff</title>
+
+    <!-- CSS -->
+    <link rel="stylesheet" href="https://decompilers-n-stuff.github.io/colors-dark.css">
+
+    
+
+    
+    
+  </head>
+  <body>
+    <header id="header">
+      <h1><a href="https:&#x2F;&#x2F;decompilers-n-stuff.github.io">Decompilers &#x27;n Stuff</a></h1>
+      <p>Experiments in decompilation</p>
+    </header>
+    <div id="page">
+      <div id="sidebar">
+        
+          
+          <nav>
+            <ul class="nav">
+              
+                
+                  <li>
+                    <a href="&#x2F;about"><span>About</span></a>
+                  </li>
+                
+                  <li>
+                    <a href="rss.xml"><span>RSS</span></a>
+                  </li>
+                
+              
+            </ul>
+          </nav>
+          
+        
+      </div>
+      <div id="content">
+        
+<article class="post">
+  <h1><a href="https:&#x2F;&#x2F;decompilers-n-stuff.github.io&#x2F;blocks&#x2F;">Decompiling blocks in Objective-C</a></h1>
+
+  <div class="post-content"><p>While decompiling some Objective-C code, I came across the following function...</p>
+<span id="continue-reading"></span>
+<p><img src="/block_example.png" alt="blocks" /></p>
+<p>I was initially confused as to what this code was doing and then after some research, I came across the following from the <a href="https://clang.llvm.org/docs/Block-ABI-Apple.html">clang</a> docs:</p>
+<p><img src="/blocks_docs.png" alt="docs" /></p>
+<p>It turns out that this is the compiled representation of a block, or closure, in Objective-C.</p>
+<p>In this post, I'll talk about how I extended the DSL I created <a href="/langdefs">here</a> to be able to decompile this.</p>
+<h2 id="struct-templates">Struct Templates</h2>
+<p>If you take a closer look at the struct definition, you should notice the <code>// imported variables</code> line just before the end brace. This is where most of the complexity comes from.</p>
+<p>See closures are called closures because they close over, or capture, or import, variables from the surrounding scope. Therefore, a new <code>__block_literal</code> type will be instantiated for every closure which will have extra fields for every captured variable.</p>
+<p>To take an example from the linked docs, the following block:</p>
+<p><img src="/clang_block_example.png" alt="clang_block_example" /></p>
+<p>which captures the variable <code>x</code> will trigger the creation of a new block literal type:</p>
+<p><img src="/clang_block_lit_example.png" alt="clang_block_lit_example" /></p>
+<p>Notice how <code>__block_literal_2</code> has an extra field <code>x</code>.</p>
+<p>We know the size of the variables imported from the <code>Block_size</code> field of <code>__block_descriptor_2</code>. Depending on the <code>flags</code> field of the literal, the descriptor can also have a <code>signature</code> field which will tell us more information about the imported variables (more on that later).</p>
+<p>To deal with these dynamic structs, I created a struct templating language that looks like</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>template block_literal {
+</span><span>    void *isa;
+</span><span>    uint32_t flags;
+</span><span>    int32_t reserved;
+</span><span>
+</span><span>    fp_type = datatype_from_objc_sig(descriptor.signature, block_size=descriptor.size)
+</span><span>    ${fp_type}&lt;size: 8&gt; invoke;
+</span><span>
+</span><span>    template block_descriptor {
+</span><span>        uint64_t reserved;
+</span><span>        uint64_t size;
+</span><span>
+</span><span>        if flags &amp; (1 &lt;&lt; 25) != 0:
+</span><span>            void *copy_helper;
+</span><span>            void *dispose_helper;
+</span><span>
+</span><span>        if flags &amp; (1 &lt;&lt; 30) != 0:
+</span><span>            char *signature;
+</span><span>    } *descriptor;
+</span><span>
+</span><span>    for i, param_type in enumerate(fp_type.param_types):
+</span><span>        ${param_type} captured_var_${i+1};
+</span><span>};
+</span></code></pre>
+<p>This DSL is even more gross than the previously created DSL but it works, so idk.</p>
+<p>The template definition starts out like a normal C struct definition (with the exception of using <code>template</code> instead of <code>struct</code>). However, things start to differ at this line:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>    fp_type = datatype_from_objc_sig(descriptor.signature, block_size=descriptor.size)
+</span></code></pre>
+<p>This is Python code that is literally just eval-ed. <code>datatype_from_objc_sig</code> is another escape hatch to parse Objective-C <a href="https://gcc.gnu.org/onlinedocs/gcc/Method-signatures.html">method signatures</a> which are non-trivial to parse.</p>
+<p>When this template is instantiated, the values of the fields are known. These field values are also necessary to concretize other parts of the template (i.e. the presence of a <code>signature</code> field in the descriptor depending on a bit in <code>flags</code>).</p>
+<p>Therefore, each field that we know the value of will be put into a local variable so that we can use it later.</p>
+<p>Another complification is that the type of <code>invoke</code> depends on the <code>signature</code> field of the descriptor. However, in order to get the values of the fields after <code>invoke</code>, I need to manually specify the size (<code>&lt;size: 8&gt;</code>).</p>
+<p>In addition, the for loop to declare the captured variables depends on <code>fp_type</code>. So we have to continue to iterate over the fields until we know enough of the subsequent fields to produce them all like:</p>
+<pre data-lang="python" style="background-color:#042029;color:#839496;" class="language-python "><code class="language-python" data-lang="python"><span style="color:#859900;">def </span><span style="color:#268bd2;">concretize_template</span><span>(template, ...):
+</span><span>    exprs_to_eval </span><span style="color:#859900;">= list</span><span>(</span><span style="color:#268bd2;">enumerate</span><span>(template.exprs))
+</span><span>    produced_fields </span><span style="color:#859900;">= </span><span>[[] </span><span style="color:#859900;">for </span><span style="color:#268bd2;">_ </span><span style="color:#859900;">in </span><span style="color:#268bd2;">range</span><span>(</span><span style="color:#268bd2;">len</span><span>(exprs_to_eval))]
+</span><span>    field_produced </span><span style="color:#859900;">= </span><span>[</span><span style="color:#b58900;">False </span><span style="color:#859900;">for </span><span style="color:#268bd2;">_ </span><span style="color:#859900;">in </span><span style="color:#268bd2;">range</span><span>(</span><span style="color:#268bd2;">len</span><span>(exprs_to_eval))]
+</span><span>    off </span><span style="color:#859900;">= </span><span style="color:#d33682;">0
+</span><span>
+</span><span>    </span><span style="color:#859900;">while </span><span style="color:#268bd2;">len</span><span>(exprs_to_eval) </span><span style="color:#859900;">&gt; </span><span style="color:#d33682;">0</span><span>:
+</span><span>        idx, (field_size, expr) </span><span style="color:#859900;">= </span><span>exprs_to_eval.pop(</span><span style="color:#d33682;">0</span><span>)
+</span><span>        results </span><span style="color:#859900;">= </span><span>[]
+</span><span>
+</span><span>        </span><span style="color:#859900;">try</span><span>:
+</span><span>            </span><span style="color:#586e75;"># Evaluating a field expression should define a variable with 
+</span><span>            </span><span style="color:#586e75;"># the name of the field and put it in the `results` variable.
+</span><span>            </span><span style="color:#268bd2;">exec</span><span>(expr)
+</span><span>            produced_fields[idx] </span><span style="color:#859900;">= </span><span>results
+</span><span>            field_produced[idx] </span><span style="color:#859900;">= </span><span style="color:#b58900;">True
+</span><span>
+</span><span>        </span><span style="color:#859900;">except </span><span style="color:#a57800;">NameError</span><span>:
+</span><span>            </span><span style="color:#586e75;"># Need to re-enqueue to parse when we have more info.
+</span><span>            exprs_to_eval.append((idx, expr))
+</span><span>
+</span><span>        </span><span style="color:#859900;">for </span><span>field </span><span style="color:#859900;">in </span><span>produced_fields[idx]:
+</span><span>            </span><span style="color:#268bd2;">locals</span><span>()[field.name] </span><span style="color:#859900;">= </span><span>field_value
+</span><span>            off </span><span style="color:#859900;">+= </span><span>dt.size
+</span><span>
+</span><span>    </span><span style="color:#b58900;">...
+</span></code></pre>
+<p>Obviously this method is very error-prone and insecure but there is something elegant about creating local variables for each struct field and being able to use their value for later calculations.</p>
+<h3 id="creating-the-block-node">Creating the block node</h3>
+<p>Using this template, we can now create another type in the Objective-C specification that serves no purpose but to re-type the start of the block literal to the template type. I'm not a big fan of this but given the current paradigm, it's necessary for the later stages (you'll see).</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>objc_block_type_assign:
+</span><span>    priority: 0
+</span><span>    from:
+</span><span>    ```
+</span><span>    AST_DECL_ASSIGN 
+</span><span>    |
+</span><span>    +--- _
+</span><span>    +--- _ =&gt; $block_base
+</span><span>    +--- _ =&gt; $block_type: $self --&gt; __NSConcreteStackBlock
+</span><span>    ```
+</span><span>    repr: ${typeof(block_base)} $block_base = $block_type;
+</span><span>    block_base: expr
+</span><span>    block_type: symbol
+</span><span>    post_actions:
+</span><span>        * retype($block_base, &quot;struct block_literal&quot;)
+</span></code></pre>
+<p>Now the function decompiles to</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>void +[SPTAudioStreamingController dispatchToAudioThread:p3] {
+</span><span>    [_runloopReadyLock lockWhenCondition:0x1];
+</span><span>    struct block_literal_1 v1 = {
+</span><span>        isa = __NSConcreteStackBlock;
+</span><span>        flags = 0xc2000000;
+</span><span>        reserved = 0x0;
+</span><span>        invoke = 0x6e02;
+</span><span>        descriptor = 0x55ac0;
+</span><span>        captured_var_1 = p3;
+</span><span>    };
+</span><span>    FUN_42294(_audio_runloop, *(_kCFRunLoopDefaultMode), &amp;v1);
+</span><span>    if (FUN_4228e(_audio_runloop, *(_kCFRunLoopDefaultMode)) != 0x0) {
+</span><span>        FUN_422ac(_audio_runloop_source, *(_kCFRunLoopDefaultMode));
+</span><span>        FUN_422be(_audio_runloop, *(_kCFRunLoopDefaultMode));
+</span><span>    }
+</span><span>    [_runloopReadyLock unlock];
+</span><span>    return;
+</span><span>}
+</span></code></pre>
+<p>Progress but this is really only slightly better than the original version.</p>
+<h3 id="inlining">Inlining</h3>
+<p>We can now create another node which detects a block and inlines it</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>block_literal_assign:
+</span><span>    priority: 0
+</span><span>    from:
+</span><span>    ```
+</span><span>    AST_DECL_ASSIGN
+</span><span>    |
+</span><span>    +--- _                  =&gt; $struct_type: $self like &quot;struct block_literal*&quot;
+</span><span>    +--- _                  =&gt; $block_var
+</span><span>    +--- AST_STRUCT_LITERAL =&gt; $block_literal
+</span><span>    ```
+</span><span>    repr: ${typeof(block_var)} $block_var = $block_literal;
+</span><span>    block_var: expr
+</span><span>    block_literal: struct_literal
+</span><span>    post_actions:
+</span><span>        * inline($block_literal.fields.invoke, $block_var, $block_literal)
+</span><span>        * propagate($block_literal.assigns)
+</span><span>        * dont_propagate($block_var)
+</span></code></pre>
+<p>This is where things get interesting.</p>
+<p>There are three actions for this node:</p>
+<ol>
+<li><code>inline(func_addr_to_inline, parameters_to_inlined_func, subtree_to_replace)</code></li>
+</ol>
+<p>The way that inlining is done is that every representation has a number of child representations. There's a &quot;wormhole&quot; in between each parent representation and its child that is a mapping from expressions in the parent to parameters in the child. For structs, there is an extra set of expressions (for each field) that travel through the wormhole to the child.</p>
+<p>We also pass a node in the AST to replace with the body of the inlined function.</p>
+<ol start="2">
+<li><code>propagate(statments_to_propgagate)</code></li>
+</ol>
+<p>We then propagate each struct field so that values are used instead of the actual fields. From the wormhole, the field expressoins are the same in the child as in the parent and these values will also get propagated to the uses in the child.</p>
+<ol start="3">
+<li><code>dont_propagate($block_var)</code></li>
+</ol>
+<p>Since the inlined function is inserted into the AST based on the node passed to <code>inline</code>, we shouldn't propagate the block variable just yet. Otherwise, the block variable wouldn't exist and we couldn't insert the child ASt.</p>
+<h3 id="representing-the-block">Representing the Block</h3>
+<p>Finally, we can add nodes to represent inlined blocks in the CST:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>objc_block:
+</span><span>    repr:
+</span><span>    ```
+</span><span>    ^{
+</span><span>        $func
+</span><span>    }
+</span><span>    ```
+</span><span>    func: block
+</span><span>    replaced_stmt: struct_literal
+</span><span>    from: AST_INLINE_FUNC
+</span><span>
+</span><span>
+</span><span>objc_block_assign:
+</span><span>    repr: ${format_block_type(value.replaced_stmt.fields.descriptor.signature, block_var)} = $value;
+</span><span>    from:
+</span><span>    ```
+</span><span>    AST_DECL_ASSIGN
+</span><span>    |
+</span><span>    +--- _                =&gt; $struct_type: $self like &quot;struct block_literal*&quot;
+</span><span>    +--- _                =&gt; $block_var
+</span><span>    +--- AST_INLINE_FUNC
+</span><span>    ```
+</span><span>    block_var: variable
+</span><span>    value: objc_block
+</span><span>    priority: 0
+</span></code></pre>
+<p>Decompiling again with the new spec shows what we want to see:</p>
+<pre data-lang="Objective-C" style="background-color:#042029;color:#839496;" class="language-Objective-C "><code class="language-Objective-C" data-lang="Objective-C"><span style="color:#a57800;">void </span><span style="color:#859900;">+</span><span>[SPTAudioStreamingController </span><span style="color:#268bd2;">dispatchToAudioThread:</span><span>p3] {
+</span><span>    [_runloopReadyLock </span><span style="color:#268bd2;">lockWhenCondition:</span><span style="color:#d33682;">0x1</span><span>];
+</span><span>    </span><span style="color:#a57800;">void </span><span>(</span><span style="color:#859900;">^</span><span>v1)(</span><span style="color:#a57800;">void</span><span>) </span><span style="color:#859900;">= ^</span><span>{
+</span><span>        </span><span style="color:#859900;">if </span><span>(p3 </span><span style="color:#859900;">!= </span><span style="color:#d33682;">0x0</span><span>) {
+</span><span>            </span><span style="color:#859900;">uint64_t</span><span> v7 </span><span style="color:#859900;">= </span><span>_objc_autoreleasePoolPush();
+</span><span>            </span><span style="color:#859900;">uint64_t</span><span> v8 </span><span style="color:#859900;">= *</span><span>(p3 </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x10</span><span>);
+</span><span>            (v8)(p3);
+</span><span>            _objc_autoreleasePoolPop(v7);
+</span><span>            </span><span style="color:#859900;">return</span><span>;
+</span><span>        }
+</span><span>        </span><span style="color:#859900;">return</span><span>;
+</span><span>    };
+</span><span>    FUN_42294(_audio_runloop, </span><span style="color:#859900;">*</span><span>(_kCFRunLoopDefaultMode), </span><span style="color:#859900;">&amp;</span><span>v1);
+</span><span>    </span><span style="color:#859900;">if </span><span>(FUN_4228e(_audio_runloop, </span><span style="color:#859900;">*</span><span>(_kCFRunLoopDefaultMode)) </span><span style="color:#859900;">!= </span><span style="color:#d33682;">0x0</span><span>) {
+</span><span>        FUN_422ac(_audio_runloop_source, </span><span style="color:#859900;">*</span><span>(_kCFRunLoopDefaultMode));
+</span><span>        FUN_422be(_audio_runloop, </span><span style="color:#859900;">*</span><span>(_kCFRunLoopDefaultMode));
+</span><span>    }
+</span><span>    [_runloopReadyLock </span><span style="color:#268bd2;">unlock</span><span>];
+</span><span>    </span><span style="color:#859900;">return</span><span>;
+</span><span>}
+</span></code></pre>
+<p>As an added bonus, we can Objective-C-ify the <code>autoreleasepool</code> (the statements in between <code>objc_autoreleasePoolPush</code> and <code>objc_autoreleasePoolPop</code>) using</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>block_w_autorelease_pool:
+</span><span>    from:
+</span><span>    ```
+</span><span>    AST_BLOCK
+</span><span>    |
+</span><span>    +--- AST_DECL_ASSIGN
+</span><span>         |
+</span><span>         +--- _
+</span><span>         +--- _         =&gt; $autorelease_pool
+</span><span>         +--- AST_CALL
+</span><span>              |
+</span><span>              +--- _    =&gt; $pool_push: $self == _objc_autoreleasePoolPush
+</span><span>              +--- *
+</span><span>    +--- ...            =&gt; $autoreleased_stmts
+</span><span>    +--- AST_VOID_STMT
+</span><span>         |
+</span><span>         +--- AST_CALL
+</span><span>              |
+</span><span>              +--- _    =&gt; $pool_pop: $self == _objc_autoreleasePoolPop
+</span><span>              +--- _    =&gt; $popped_pool: $self == $autorelease_pool
+</span><span>    ```
+</span><span>    repr:
+</span><span>    ```
+</span><span>    `@autoreleasepool` {
+</span><span>        ${*autoreleased_stmts&lt;CR&gt;}
+</span><span>    }
+</span><span>    ```
+</span><span>    priority: 0
+</span><span>    autoreleased_stmts: statement*
+</span></code></pre>
+<p>to decompile the function as</p>
+<pre data-lang="Objective-C" style="background-color:#042029;color:#839496;" class="language-Objective-C "><code class="language-Objective-C" data-lang="Objective-C"><span style="color:#a57800;">void </span><span style="color:#859900;">+</span><span>[SPTAudioStreamingController </span><span style="color:#268bd2;">dispatchToAudioThread:</span><span>p3] {
+</span><span>    [_runloopReadyLock </span><span style="color:#268bd2;">lockWhenCondition:</span><span style="color:#d33682;">0x1</span><span>];
+</span><span>    </span><span style="color:#a57800;">void </span><span>(</span><span style="color:#859900;">^</span><span>v1)(</span><span style="color:#a57800;">void</span><span>) </span><span style="color:#859900;">= ^</span><span>{
+</span><span>        </span><span style="color:#859900;">if </span><span>(p3 </span><span style="color:#859900;">!= </span><span style="color:#d33682;">0x0</span><span>) {
+</span><span>            @autoreleasepool {
+</span><span>                </span><span style="color:#859900;">uint64_t</span><span> v8 </span><span style="color:#859900;">= *</span><span>(p3 </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x10</span><span>);
+</span><span>                (v8)(p3);
+</span><span>            }
+</span><span>        }
+</span><span>        </span><span style="color:#859900;">return</span><span>;
+</span><span>    };
+</span><span>    FUN_42294(_audio_runloop, </span><span style="color:#859900;">*</span><span>(_kCFRunLoopDefaultMode), </span><span style="color:#859900;">&amp;</span><span>v1);
+</span><span>    </span><span style="color:#859900;">if </span><span>(FUN_4228e(_audio_runloop, </span><span style="color:#859900;">*</span><span>(_kCFRunLoopDefaultMode)) </span><span style="color:#859900;">!= </span><span style="color:#d33682;">0x0</span><span>) {
+</span><span>        FUN_422ac(_audio_runloop_source, </span><span style="color:#859900;">*</span><span>(_kCFRunLoopDefaultMode));
+</span><span>        FUN_422be(_audio_runloop, </span><span style="color:#859900;">*</span><span>(_kCFRunLoopDefaultMode));
+</span><span>    }
+</span><span>    [_runloopReadyLock </span><span style="color:#268bd2;">unlock</span><span>];
+</span><span>    </span><span style="color:#859900;">return</span><span>;
+</span><span>}
+</span></code></pre>
+<h3 id="final-thoughts">Final Thoughts</h3>
+<p>This got a little hairy with wormholes and what-not but I think the result are pretty cool.</p>
+<p>I've been learning about MLIR and the parent/child representations here sound similar to their region trees so maybe I'm just trying to reinvent MLIR. We'll see.</p>
+</div>
+
+  <p class="meta">Posted on <span class="postdate">2024-02-20</span></p>
+</article>
+
+      </div>
+      <footer id="footer">
+        <p class="copyright">
+          
+            Powered by <a href="https://www.getzola.org/">Zola</a> and the
+            <a href="https://github.com/hulufei/solar-theme-zola">Solar</a>-theme.
+          
+        </p>
+      </footer>
+    </div>
+  </body>
+</html>
