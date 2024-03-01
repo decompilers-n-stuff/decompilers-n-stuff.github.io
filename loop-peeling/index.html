@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta http-equiv="content-type" content="text/html; charset=utf-8">
+
+    <!-- Enable responsiveness on mobile devices-->
+    <!-- viewport-fit=cover is to support iPhone X rounded corners and notch in landscape-->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, viewport-fit=cover">
+
+    <title>Decompilers &#x27;n Stuff</title>
+
+    <!-- CSS -->
+    <link rel="stylesheet" href="https://decompilers-n-stuff.github.io/colors-dark.css">
+
+    
+
+    
+    
+  </head>
+  <body>
+    <header id="header">
+      <h1><a href="https:&#x2F;&#x2F;decompilers-n-stuff.github.io">Decompilers &#x27;n Stuff</a></h1>
+      <p>Experiments in decompilation</p>
+    </header>
+    <div id="page">
+      <div id="sidebar">
+        
+          
+          <nav>
+            <ul class="nav">
+              
+                
+                  <li>
+                    <a href="&#x2F;about"><span>About</span></a>
+                  </li>
+                
+                  <li>
+                    <a href="rss.xml"><span>RSS</span></a>
+                  </li>
+                
+              
+            </ul>
+          </nav>
+          
+        
+      </div>
+      <div id="content">
+        
+<article class="post">
+  <h1><a href="https:&#x2F;&#x2F;decompilers-n-stuff.github.io&#x2F;loop-peeling&#x2F;">Looping Un-Splitting</a></h1>
+
+  <div class="post-content"><p>In this post, I'll be talking about a new compiler optimization I learned about and how I deoptimized it using z3 for nicer decompiled code.</p>
+<span id="continue-reading"></span><h2 id="background">Background</h2>
+<p>The optimization I'll be covering is a special case of <a href="https://en.wikipedia.org/wiki/Loop_splitting">loop splitting</a> called loop peeling where the compiler extracts (peels) the first iteration of a loop so that it is executed outside of the loop body.</p>
+<p>For example, take the following loop (modified from the wikipedia example):</p>
+<pre data-lang="C" style="background-color:#042029;color:#839496;" class="language-C "><code class="language-C" data-lang="C"><span style="color:#a57800;">int</span><span> p </span><span style="color:#859900;">= </span><span style="color:#d33682;">10</span><span>;
+</span><span style="color:#a57800;">int</span><span> result </span><span style="color:#859900;">= </span><span style="color:#d33682;">0</span><span>;
+</span><span>
+</span><span style="color:#859900;">for </span><span>(</span><span style="color:#a57800;">int</span><span> i </span><span style="color:#859900;">= </span><span style="color:#d33682;">0</span><span>; i </span><span style="color:#859900;">&lt;</span><span> N; i</span><span style="color:#859900;">++</span><span>) {
+</span><span>    result </span><span style="color:#859900;">+=</span><span> p;
+</span><span>    p </span><span style="color:#859900;">=</span><span> i;
+</span><span>}
+</span></code></pre>
+<p>On every iteration after the first, <code>p</code> will be equal to <code>i</code> so the compiler can transform it to:</p>
+<pre data-lang="C" style="background-color:#042029;color:#839496;" class="language-C "><code class="language-C" data-lang="C"><span style="color:#a57800;">int</span><span> p </span><span style="color:#859900;">= </span><span style="color:#d33682;">10</span><span>;
+</span><span style="color:#a57800;">int</span><span> result </span><span style="color:#859900;">= </span><span style="color:#d33682;">0</span><span>;
+</span><span>
+</span><span style="color:#586e75;">// Peeled first iteration
+</span><span>result </span><span style="color:#859900;">+=</span><span> p;
+</span><span>
+</span><span style="color:#859900;">for </span><span>(</span><span style="color:#a57800;">int</span><span> i </span><span style="color:#859900;">= </span><span style="color:#d33682;">1</span><span>; i </span><span style="color:#859900;">&lt;</span><span> N; i</span><span style="color:#859900;">++</span><span>) {
+</span><span>    result </span><span style="color:#859900;">+=</span><span> i;
+</span><span>}
+</span></code></pre>
+<p>Now the compiler can recognize that the loop is just adding every integer from 1 to N and transform the code to:</p>
+<pre data-lang="C" style="background-color:#042029;color:#839496;" class="language-C "><code class="language-C" data-lang="C"><span style="color:#a57800;">int</span><span> p </span><span style="color:#859900;">= </span><span style="color:#d33682;">10</span><span>;
+</span><span style="color:#a57800;">int</span><span> result </span><span style="color:#859900;">= </span><span style="color:#d33682;">0</span><span>;
+</span><span>
+</span><span>result </span><span style="color:#859900;">+=</span><span> p;
+</span><span>result </span><span style="color:#859900;">+=</span><span> N </span><span style="color:#859900;">* </span><span>(N </span><span style="color:#859900;">- </span><span style="color:#d33682;">1</span><span>) </span><span style="color:#859900;">/ </span><span style="color:#d33682;">2</span><span>;
+</span></code></pre>
+<p>This is obviously a contrived example but you can see how loop peeling might enable future loop optimizations.</p>
+<h2 id="the-code">The Code</h2>
+<p>I came across this optimization, not knowing what it was, while trying to decompile the following function from Ghidra's source code (it was the most recent C++ codebase I had laying around):</p>
+<pre data-lang="C++" style="background-color:#042029;color:#839496;" class="language-C++ "><code class="language-C++" data-lang="C++"><span>Address JoinRecord::</span><span style="color:#268bd2;">getEquivalentAddress</span><span>(uintb offset,int4 </span><span style="color:#859900;">&amp;</span><span>pos) </span><span style="color:#738a05;">const
+</span><span>{
+</span><span>  </span><span style="color:#859900;">if </span><span>(offset </span><span style="color:#859900;">&lt;</span><span> unified.</span><span style="color:#268bd2;">offset</span><span>)
+</span><span>    </span><span style="color:#859900;">return </span><span>Address();		</span><span style="color:#586e75;">// offset comes before this range
+</span><span>
+</span><span>  int4 smallOff </span><span style="color:#859900;">= </span><span>(int4)(offset </span><span style="color:#859900;">-</span><span> unified.</span><span style="color:#268bd2;">offset</span><span>);
+</span><span>
+</span><span>  </span><span style="color:#859900;">if </span><span>(pieces[</span><span style="color:#d33682;">0</span><span>].</span><span style="color:#268bd2;">space</span><span>-&gt;isBigEndian()) {
+</span><span>    </span><span style="color:#859900;">for</span><span>(pos </span><span style="color:#859900;">= </span><span style="color:#d33682;">0</span><span>; pos </span><span style="color:#859900;">&lt;</span><span> pieces.size(); </span><span style="color:#859900;">++</span><span>pos) {
+</span><span>      int4 pieceSize </span><span style="color:#859900;">=</span><span> pieces[pos].</span><span style="color:#268bd2;">size</span><span>;
+</span><span>
+</span><span>      </span><span style="color:#859900;">if </span><span>(smallOff </span><span style="color:#859900;">&lt;</span><span> pieceSize)
+</span><span>	      </span><span style="color:#859900;">break</span><span>;
+</span><span>
+</span><span>      smallOff </span><span style="color:#859900;">-=</span><span> pieceSize;
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#859900;">if </span><span>(pos </span><span style="color:#859900;">==</span><span> pieces.size())
+</span><span>      </span><span style="color:#859900;">return </span><span>Address();		</span><span style="color:#586e75;">// offset comes after this range
+</span><span>  }
+</span><span>  </span><span style="color:#859900;">else </span><span>{
+</span><span>    </span><span style="color:#859900;">for </span><span>(pos </span><span style="color:#859900;">=</span><span> pieces.size() </span><span style="color:#859900;">- </span><span style="color:#d33682;">1</span><span>; pos </span><span style="color:#859900;">&gt;= </span><span style="color:#d33682;">0</span><span>; </span><span style="color:#859900;">--</span><span>pos) {
+</span><span>      int4 pieceSize </span><span style="color:#859900;">=</span><span> pieces[pos].</span><span style="color:#268bd2;">size</span><span>;
+</span><span>      </span><span style="color:#859900;">if </span><span>(smallOff </span><span style="color:#859900;">&lt;</span><span> pieceSize)
+</span><span>	      </span><span style="color:#859900;">break</span><span>;
+</span><span>
+</span><span>      smallOff </span><span style="color:#859900;">-=</span><span> pieceSize;
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#859900;">if </span><span>(pos </span><span style="color:#859900;">&lt; </span><span style="color:#d33682;">0</span><span>)
+</span><span>      </span><span style="color:#859900;">return </span><span>Address();		</span><span style="color:#586e75;">// offset comes after this range
+</span><span>  }
+</span><span>
+</span><span>  </span><span style="color:#859900;">return </span><span>Address(pieces[pos].</span><span style="color:#268bd2;">space</span><span>, pieces[pos].</span><span style="color:#268bd2;">offset </span><span style="color:#859900;">+</span><span> smallOff);
+</span><span>}
+</span></code></pre>
+<p>Generating a medium-level representation of this function in the decompiler produces a CFG more complicated than we might expect:</p>
+<p><img src="/orig_loop_cfg.png" alt="loop_orig" /></p>
+<p>Zooming in a bit, we see that the left side of the graph corresponds to the true block in the <code>if/else</code> since among other things the loop counter is incremented in block <code>0x537fc</code> whereas it's decremented in <code>0x53790</code>:</p>
+<p><img src="/orig_loop_closeup.png" alt="loop_zoomed" /></p>
+<p>But the question still stands as to what all those extra blocks are doing before the loop.</p>
+<p>As you might've guessed, that's the first iteration of the loop that LLVM split out.</p>
+<p>To see that, let's first compare block <code>0x537ad</code>:</p>
+<p><img src="/split_header.png" alt="split_header" /></p>
+<p>to block <code>0x537f0</code>:</p>
+<p><img src="/orig_header.png" alt="orig_header" /></p>
+<p>To understand the correspondence between these two blocks, it's helpful first to look at the <code>JoinRecord</code>'s class definition:</p>
+<pre data-lang="C++" style="background-color:#042029;color:#839496;" class="language-C++ "><code class="language-C++" data-lang="C++"><span style="color:#738a05;">class </span><span style="color:#268bd2;">JoinRecord </span><span>{
+</span><span>  vector&lt;VarnodeData&gt; pieces; </span><span style="color:#586e75;">// +0x0
+</span><span>  VarnodeData unified;        </span><span style="color:#586e75;">// +0x18
+</span><span>  </span><span style="color:#859900;">...
+</span><span>};
+</span><span>
+</span><span style="color:#738a05;">struct </span><span>VarnodeData {
+</span><span>  AddrSpace </span><span style="color:#859900;">*</span><span>space; </span><span style="color:#586e75;">// +0x0
+</span><span>  uintb offset;     </span><span style="color:#586e75;">// +0x8
+</span><span>  uint4 size;       </span><span style="color:#586e75;">// +0x10
+</span><span>}
+</span></code></pre>
+<p>which, knowing the layout of C++ vectors, we can expand to:</p>
+<pre data-lang="C++" style="background-color:#042029;color:#839496;" class="language-C++ "><code class="language-C++" data-lang="C++"><span style="color:#738a05;">class </span><span style="color:#268bd2;">JoinRecord </span><span>{
+</span><span>  {
+</span><span>    VarnodeData </span><span style="color:#859900;">*</span><span>first; </span><span style="color:#586e75;">// +0x0
+</span><span>    VarnodeData </span><span style="color:#859900;">*</span><span>last;  </span><span style="color:#586e75;">// +0x8
+</span><span>    VarnodeData </span><span style="color:#859900;">*</span><span>end;   </span><span style="color:#586e75;">// +0x10
+</span><span>  }
+</span><span>  VarnodeData unified;  </span><span style="color:#586e75;">// +0x18
+</span><span>  </span><span style="color:#859900;">...
+</span><span>};
+</span></code></pre>
+<p>So if we take <code>RSI</code> to be the method's <code>this</code> parameter and <code>RCX</code> to be the <code>&amp;pos</code> parameter, then block <code>0x537ad</code> corresponds to:</p>
+<pre data-lang="C++" style="background-color:#042029;color:#839496;" class="language-C++ "><code class="language-C++" data-lang="C++"><span>pos </span><span style="color:#859900;">= </span><span style="color:#d33682;">0</span><span>;
+</span><span>
+</span><span style="color:#859900;">if </span><span>(pieces.</span><span style="color:#268bd2;">last </span><span style="color:#859900;">==</span><span> pieces.</span><span style="color:#268bd2;">first</span><span>)
+</span><span>    </span><span style="color:#859900;">return </span><span>Address();
+</span></code></pre>
+<p>and without the phi nodes and assuming <code>R9</code> is <code>pieces.size()</code> (which I will show to be true later), <code>0x537f0</code> corresponds to:</p>
+<pre data-lang="C++" style="background-color:#042029;color:#839496;" class="language-C++ "><code class="language-C++" data-lang="C++"><span style="color:#859900;">??
+</span><span>pos </span><span style="color:#859900;">=</span><span> i </span><span style="color:#859900;">+ </span><span style="color:#d33682;">1</span><span>;
+</span><span>
+</span><span style="color:#859900;">if </span><span>(pieces.size() </span><span style="color:#859900;">- </span><span style="color:#d33682;">1 </span><span style="color:#859900;">==</span><span> i)
+</span><span>    </span><span style="color:#859900;">break</span><span>;
+</span></code></pre>
+<p>So discounting the write to <code>RDX</code> in <code>0x537f0</code>, <code>0x537ad</code> looks very close to what <code>0x537f0</code> would be when <code>i = 0</code>.</p>
+<p>Doing the same thing for <code>0x537c6</code> and <code>0x537fc</code>, those blocks correspond roughly to:</p>
+<pre data-lang="C++" style="background-color:#042029;color:#839496;" class="language-C++ "><code class="language-C++" data-lang="C++"><span style="color:#859900;">...
+</span><span>pieceSize </span><span style="color:#859900;">=</span><span> pieces[</span><span style="color:#d33682;">0</span><span>].</span><span style="color:#268bd2;">size</span><span>;
+</span><span>
+</span><span style="color:#859900;">if </span><span>(pieceSize </span><span style="color:#859900;">&gt;</span><span> smallOff)
+</span><span>    </span><span style="color:#859900;">break</span><span>;
+</span></code></pre>
+<p>and </p>
+<pre data-lang="C++" style="background-color:#042029;color:#839496;" class="language-C++ "><code class="language-C++" data-lang="C++"><span>pieceSize </span><span style="color:#859900;">=</span><span> pieces[i</span><span style="color:#859900;">+</span><span style="color:#d33682;">1</span><span>].</span><span style="color:#268bd2;">size</span><span>;
+</span><span>
+</span><span style="color:#859900;">if </span><span>(pieceSize </span><span style="color:#859900;">&gt;</span><span> smallOff)
+</span><span>    </span><span style="color:#859900;">break</span><span>;
+</span></code></pre>
+<p>respectively.</p>
+<p>So now that we are pretty sure that these blocks correspond to the first iteration of the loop, how can we get the decompiler to recognize this and merge them?</p>
+<h3 id="tangent">Tangent</h3>
+<p>My first idea was to:</p>
+<ol>
+<li>Somehow find the block that corresponds to the first iteration of the loop header.</li>
+<li>Traverse the graph induced by the loop header and check that each analogous block in the copied loop header's induced subgraph corresponds.</li>
+</ol>
+<p>However, this quickly runs into a problem when we compare the subgraphs of the first iteration:</p>
+<p><img src="/first_iteration.png" alt="first_iter" /></p>
+<p>and the loop:</p>
+<p><img src="/rest_iteration.png" alt="rest_iter" /></p>
+<p>in that there are extra blocks at <code>0x537b8</code> and <code>0x537c2</code>.</p>
+<p>Translating blocks <code>0x537b8</code>, <code>0x537c2</code>, and <code>0x537c6</code> to <code>C</code> gives us:</p>
+<pre data-lang="C" style="background-color:#042029;color:#839496;" class="language-C "><code class="language-C" data-lang="C"><span>R9 </span><span style="color:#859900;">= </span><span>max((this.</span><span style="color:#268bd2;">pieces</span><span>.</span><span style="color:#268bd2;">last </span><span style="color:#859900;">-</span><span> this.</span><span style="color:#268bd2;">pieces</span><span>.</span><span style="color:#268bd2;">first</span><span>) </span><span style="color:#859900;">/ </span><span style="color:#d33682;">0x18</span><span>, </span><span style="color:#d33682;">1</span><span>)
+</span><span>   </span><span style="color:#859900;">= </span><span>max(pieces.size(), </span><span style="color:#d33682;">1</span><span>)
+</span></code></pre>
+<p>This is because each element in the <code>pieces</code> vector is a <code>VarnodeData</code> struct which is 0x18 bytes long.</p>
+<p>However, since <code>pieces.first != pieces.last</code> in order for block <code>0x537b8</code> to be reached, we know that <code>pieces.size() &gt; 0</code> and therefore <code>max(pieces.size(), 1) = pieces.size()</code>.</p>
+<p>From the source code, this is what we know the number of iterations of the loop to be. Weird that the compiler would insert those extra blocks to perform redundant work, huh?</p>
+<p>Anyways, it would be nice to get the decompiler to recognize this so that the CFG can be simplified and the loop structure can be properly matched.</p>
+<p>To do that, we can use z3 to &quot;prove&quot; (you'll see the reason for the quotes later) that <code>R9_2</code> is simply equal to <code>pieces.size()</code>.</p>
+<p>Let's try to express that theorem in z3:</p>
+<pre data-lang="python" style="background-color:#042029;color:#839496;" class="language-python "><code class="language-python" data-lang="python"><span>first </span><span style="color:#859900;">= </span><span>BitVec(</span><span style="color:#c60000;">&#39;</span><span style="color:#269186;">first</span><span style="color:#c60000;">&#39;</span><span>, </span><span style="color:#d33682;">64</span><span>)
+</span><span>last </span><span style="color:#859900;">= </span><span>BitVec(</span><span style="color:#c60000;">&#39;</span><span style="color:#269186;">last</span><span style="color:#c60000;">&#39;</span><span>, </span><span style="color:#d33682;">64</span><span>)
+</span><span>size </span><span style="color:#859900;">= </span><span>(last </span><span style="color:#859900;">- </span><span>first) </span><span style="color:#859900;">/ </span><span style="color:#d33682;">0x18
+</span><span>lhs </span><span style="color:#859900;">= </span><span>size
+</span><span>rhs </span><span style="color:#859900;">= </span><span>If(UGE(size, </span><span style="color:#d33682;">2</span><span>), size, </span><span style="color:#d33682;">1</span><span>)
+</span><span>prove(Implies(first </span><span style="color:#859900;">!= </span><span>last, lhs </span><span style="color:#859900;">== </span><span>rhs))
+</span></code></pre>
+<p>and we get:</p>
+<pre data-lang="python" style="background-color:#042029;color:#839496;" class="language-python "><code class="language-python" data-lang="python"><span style="color:#859900;">&gt;&gt; </span><span>counterexample
+</span><span>[last = </span><span style="color:#d33682;">9223372036854775803</span><span>, first = </span><span style="color:#d33682;">9223372036854775824</span><span>]
+</span></code></pre>
+<p>Oh. The automated theorem prover proved us wrong. Plugging these values in, <code>9223372036854775803 - 9223372036854775824 = -21</code>. Then rounding towards zero, <code>-21 / 0x18 = 0</code> and our equation becomes <code>0 == If(UGE(0, 2), 0, 1)</code> or <code>0 == 1</code> which is obviously false!</p>
+<p>I now see why the compiler inserted those checks. If <code>|last - first| &lt; 0x18</code>, then due to rounding, we can't simplify <code>If(UGE(size, 2), size, 1)</code> to <code>size</code>.</p>
+<p>So what should we do now?</p>
+<p>My first thought was to give up as I'm pretty sure this problem can't be solved soundly (otherwise I'm sure the compiler would've done so).</p>
+<p>However, this is unacceptable. We <em>know</em> that this equation is true. So if we can't solve it soundly, let's solve it unsoundly!</p>
+<h3 id="double-tangent">Double Tangent</h3>
+<p>It turns out, if we force <code>(last - first) % 0x18 == 0</code> to be true, then our equation is true.</p>
+<p>This makes sense because while technically it's possible that <code>last - first</code> is not a multiple of 0x18, we can be almost positive that this is the case because they are pointers into a contiguous array of <code>VarnodeData</code>'s.</p>
+<pre data-lang="python" style="background-color:#042029;color:#839496;" class="language-python "><code class="language-python" data-lang="python"><span>prove(Implies(And(((last </span><span style="color:#859900;">- </span><span>first) </span><span style="color:#859900;">% </span><span style="color:#d33682;">0x18</span><span>) </span><span style="color:#859900;">== </span><span style="color:#d33682;">0</span><span>, first </span><span style="color:#859900;">!= </span><span>last),
+</span><span>              lhs </span><span style="color:#859900;">== </span><span>rhs))
+</span><span style="color:#859900;">&gt;&gt; </span><span>proved
+</span></code></pre>
+<p>This constraint should really be inferred from the type of <code>RSI_0</code> or at least by the access pattern in the loop but for now I just jammed in a constraint that says that any division implies that the dividend is divisible by the divisor (say that three times fast!).</p>
+<p>Obviously this is not generally true but I expect it to be true more often than not.</p>
+<p>Applying this simplification, results in the conditional being removed and a more-matchable looking graph:</p>
+<p><img src="/first_simp_loop.png" alt="first_simp_loop" /></p>
+<h2 id="tangent-over">Tangent Over</h2>
+<p>Now we can return to the main algorithm:</p>
+<ol>
+<li>Somehow find the block that corresponds to the first iteration of the loop header.</li>
+<li>Traverse the graph induced by the block header and check that each analogous block reachable from the copied loop header corresponds.</li>
+</ol>
+<p>We can solve (1) by walking up the dominator tree starting from the loop pre-header:</p>
+<pre data-lang="python" style="background-color:#042029;color:#839496;" class="language-python "><code class="language-python" data-lang="python"><span>hdr_cand </span><span style="color:#859900;">= </span><span>pre_header
+</span><span>
+</span><span style="color:#859900;">while </span><span>hdr_cand </span><span style="color:#859900;">is not </span><span style="color:#b58900;">None </span><span style="color:#859900;">and not </span><span>equiv_to_prev_iter(hdr, hdr_cand):
+</span><span>    hdr_cand </span><span style="color:#859900;">= </span><span>hdr_cand.idom
+</span></code></pre>
+<p>where <code>equiv_to_prev_iter</code> goes through each statement in the header and candidate blocks and proves that they are equivalent assuming that the variables defined in the pre-header (0x537e2) are what they would be on the <code>-1</code>-th iteration of the loop.</p>
+<p>These values are known because in block <code>0x537fc</code>, <code>RDI</code> is set to <code>RDI + 0x18</code>, and <code>RSI</code> to <code>RSI + 1</code>. Therefore, we set the known values of <code>RDI</code> and <code>RSI</code> in block <code>0x537ad</code> to be <code>0 - 1 = -1</code> and <code>*RSI_0 + 0x28 - 0x18 = *RSI_0 + 0x10</code> respectively.</p>
+<h3 id="tangent-ii">Tangent II</h3>
+<p>Now that we have found the copied loop header, we immediately run into another problem when trying to match their induced subgraphs:</p>
+<p><img src="/copied_header_induced.png" alt="copied_header_induced" /></p>
+<p>vs.</p>
+<p><img src="/orig_header_induced.png" alt="orig_header_induced" /></p>
+<p>Once the loop exits, the condition for if <code>pos == pieces.size()</code> is still checked:</p>
+<pre data-lang="C++" style="background-color:#042029;color:#839496;" class="language-C++ "><code class="language-C++" data-lang="C++"><span style="color:#859900;">for</span><span>(pos </span><span style="color:#859900;">= </span><span style="color:#d33682;">0</span><span>; pos </span><span style="color:#859900;">&lt;</span><span> pieces.size(); </span><span style="color:#859900;">++</span><span>pos) {
+</span><span>    </span><span style="color:#859900;">...
+</span><span>}
+</span><span>
+</span><span style="color:#859900;">if </span><span>(pos </span><span style="color:#859900;">==</span><span> pieces.size())
+</span><span>    </span><span style="color:#859900;">return </span><span>Address();
+</span></code></pre>
+<p>However, after the copied version of the loop header, <code>pos = 0</code> and <code>pieces.size() == 0</code> on the branch to <code>0x53751</code>. Therefore, the compiler skips the redundant <code>pos == pieces.size()</code> check and jumps directly to the <code>return Address();</code> block.</p>
+<p>But wait!</p>
+<p>Using our previous kludge, we &quot;proved&quot; that <code>R9_2 = pieces.size()</code>. So the check at <code>0x5381d</code> can be simplified to <code>if (pieces.size() == pieces.size())</code> or <code>if (true)</code>!</p>
+<p>We also can see that <code>RSI</code> and <code>RDI</code> are not used in block <code>0x53751</code>, so the block can safely be deleted. Sweet.</p>
+<p>Performing this simplification results in the following subgraph:</p>
+<p><img src="/second_simp_loop.png" alt="second_simp_loop" /></p>
+<h2 id="closing-the-loop">Closing the Loop</h2>
+<p>We can now perform the second step of the matching algorithm using the following pseudocode:</p>
+<pre data-lang="python" style="background-color:#042029;color:#839496;" class="language-python "><code class="language-python" data-lang="python"><span>buf </span><span style="color:#859900;">= </span><span>[(hdr, hdr_cand)]
+</span><span>
+</span><span style="color:#859900;">while </span><span style="color:#268bd2;">len</span><span>(buf) </span><span style="color:#859900;">&gt; </span><span style="color:#d33682;">0</span><span>:
+</span><span>    orig, cand </span><span style="color:#859900;">= </span><span>buf.pop(</span><span style="color:#d33682;">0</span><span>)
+</span><span>
+</span><span>    </span><span style="color:#586e75;"># Consider matching complete if we reach:
+</span><span>    </span><span style="color:#586e75;">#   a) The loop header, since all of the original blocks have been matched,
+</span><span>    </span><span style="color:#586e75;">#   b) The pre-header, since all of the copied blocks have been matched, or
+</span><span>    </span><span style="color:#586e75;">#   c) A &quot;join&quot; point, where the original and candidate graphs become the same.
+</span><span>    </span><span style="color:#859900;">if </span><span>orig </span><span style="color:#859900;">== </span><span>loop_header </span><span style="color:#859900;">or </span><span style="color:#d30102;">\
+</span><span>       cand </span><span style="color:#859900;">== </span><span>pre_header </span><span style="color:#859900;">or </span><span style="color:#d30102;">\
+</span><span>       orig </span><span style="color:#859900;">== </span><span>cand:
+</span><span>        </span><span style="color:#859900;">continue
+</span><span>
+</span><span>    </span><span style="color:#859900;">if not </span><span>equiv_to_prev_iter(orig, cand):
+</span><span>        </span><span style="color:#859900;">return </span><span style="color:#b58900;">False
+</span><span>
+</span><span>    </span><span style="color:#859900;">if </span><span>orig.is_ifgoto():
+</span><span>        buf.append((orig.target, cand.target))    
+</span><span>        buf.append((orig.fallthrough, cand.fallthrough))
+</span><span>
+</span><span>    </span><span style="color:#859900;">elif </span><span>orig.is_goto():
+</span><span>        buf.append((orig.target, cand.target))    
+</span><span>
+</span><span>    </span><span style="color:#859900;">else</span><span>:
+</span><span>        buf.append((orig.fallthrough, cand.fallthrough))
+</span><span>
+</span><span style="color:#859900;">return </span><span style="color:#b58900;">True
+</span></code></pre>
+<p>Applying this simplification, the CFG now looks like what we might've expected at the beginning of the article:</p>
+<p><img src="/final_cfg.png" alt="final_cfg" /></p>
+<p>and if we continue to decompile this CFG, the result looks pretty close to the C version of the original function (modulo bad common subexpression elimination and types/arrays):</p>
+<pre data-lang="C" style="background-color:#042029;color:#839496;" class="language-C "><code class="language-C" data-lang="C"><span style="color:#859900;">uint64_t </span><span style="color:#536871;">FUN_53740</span><span>(p1, p2, p3, p4) {
+</span><span>    </span><span style="color:#859900;">if </span><span>(</span><span style="color:#859900;">*</span><span>(p2 </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x20</span><span>) </span><span style="color:#859900;">&lt;=</span><span> p3) {
+</span><span>        </span><span style="color:#859900;">uint64_t</span><span> v1 </span><span style="color:#859900;">=</span><span> p3 </span><span style="color:#859900;">- *</span><span>(p2 </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x20</span><span>);
+</span><span>        </span><span style="color:#859900;">uint64_t</span><span> v3;
+</span><span>        </span><span style="color:#859900;">uint64_t</span><span> v2;
+</span><span>        </span><span style="color:#859900;">if </span><span>(</span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">*</span><span>(p2)) </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x24</span><span>) </span><span style="color:#859900;">!= </span><span style="color:#d33682;">0x0</span><span>) {
+</span><span>            v3 </span><span style="color:#859900;">= *</span><span>(p2) </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x28</span><span>;
+</span><span>            v2 </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>            </span><span style="color:#859900;">uint64_t</span><span> v5;
+</span><span>            </span><span style="color:#859900;">while </span><span>(</span><span style="color:#d33682;">0x1</span><span>) {
+</span><span>                v5 </span><span style="color:#859900;">= *</span><span>(v3);
+</span><span>                v1 </span><span style="color:#859900;">=</span><span> v1 </span><span style="color:#859900;">-</span><span> v5;
+</span><span>                </span><span style="color:#859900;">*</span><span>(p4) </span><span style="color:#859900;">=</span><span> v2 </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x1</span><span>;
+</span><span>                </span><span style="color:#859900;">if </span><span>(</span><span style="color:#859900;">*</span><span>(p2 </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x8</span><span>) </span><span style="color:#859900;">- *</span><span>(p2) </span><span style="color:#859900;">/ </span><span style="color:#d33682;">0x18 </span><span style="color:#859900;">- </span><span style="color:#d33682;">0x1 </span><span style="color:#859900;">==</span><span> v2) {
+</span><span>                    </span><span style="color:#859900;">*</span><span>(p1) </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>                    </span><span style="color:#859900;">return</span><span> p1;
+</span><span>                }
+</span><span>                v3 </span><span style="color:#859900;">=</span><span> v3 </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x18</span><span>;
+</span><span>                v2 </span><span style="color:#859900;">=</span><span> v2 </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x1</span><span>;
+</span><span>                </span><span style="color:#859900;">if </span><span>(v1 </span><span style="color:#859900;">-</span><span> v5 </span><span style="color:#859900;">&lt; *</span><span>(v3)) {
+</span><span>                    </span><span style="color:#859900;">break</span><span>;
+</span><span>                }
+</span><span>            }
+</span><span>            v3 </span><span style="color:#859900;">=</span><span> v1 </span><span style="color:#859900;">-</span><span> v5;
+</span><span>            </span><span style="color:#859900;">if </span><span>(</span><span style="color:#859900;">*</span><span>(p2 </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x8</span><span>) </span><span style="color:#859900;">- *</span><span>(p2) </span><span style="color:#859900;">/ </span><span style="color:#d33682;">0x18 </span><span style="color:#859900;">==</span><span> v2 </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x1</span><span>) {
+</span><span>                </span><span style="color:#859900;">*</span><span>(p1) </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>                </span><span style="color:#859900;">return</span><span> p1;
+</span><span>            }
+</span><span>        }
+</span><span>        </span><span style="color:#859900;">else </span><span>{
+</span><span>            v2 </span><span style="color:#859900;">= *</span><span>(p2 </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x8</span><span>) </span><span style="color:#859900;">- *</span><span>(p2) </span><span style="color:#859900;">/ </span><span style="color:#d33682;">0x18</span><span>;
+</span><span>            </span><span style="color:#859900;">while </span><span>(</span><span style="color:#d33682;">0x1</span><span>) {
+</span><span>                v2 </span><span style="color:#859900;">=</span><span> v2 </span><span style="color:#859900;">- </span><span style="color:#d33682;">0x1</span><span>;
+</span><span>                </span><span style="color:#859900;">*</span><span>(p4) </span><span style="color:#859900;">=</span><span> v2 </span><span style="color:#859900;">- </span><span style="color:#d33682;">0x1</span><span>;
+</span><span>                </span><span style="color:#859900;">if </span><span>(v2 </span><span style="color:#859900;">&lt; </span><span style="color:#d33682;">0x1</span><span>) {
+</span><span>                    </span><span style="color:#859900;">*</span><span>(p1) </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>                    </span><span style="color:#859900;">return</span><span> p1;
+</span><span>                }
+</span><span>                v3 </span><span style="color:#859900;">=</span><span> v1;
+</span><span>                v1 </span><span style="color:#859900;">=</span><span> v1 </span><span style="color:#859900;">- *</span><span>(</span><span style="color:#859900;">*</span><span>(p2) </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x10 </span><span style="color:#859900;">+</span><span> v2 </span><span style="color:#859900;">- </span><span style="color:#d33682;">0x1 </span><span style="color:#859900;">* </span><span style="color:#d33682;">0x18</span><span>);
+</span><span>                </span><span style="color:#859900;">if </span><span>(v1 </span><span style="color:#859900;">&lt; *</span><span>(</span><span style="color:#859900;">*</span><span>(p2) </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x10 </span><span style="color:#859900;">+</span><span> v2 </span><span style="color:#859900;">- </span><span style="color:#d33682;">0x1 </span><span style="color:#859900;">* </span><span style="color:#d33682;">0x18</span><span>)) {
+</span><span>                    </span><span style="color:#859900;">break</span><span>;
+</span><span>                }
+</span><span>            }
+</span><span>        }
+</span><span>        </span><span style="color:#859900;">*</span><span>(p1) </span><span style="color:#859900;">= *</span><span>(v2 </span><span style="color:#859900;">* </span><span style="color:#d33682;">0x18 </span><span style="color:#859900;">+ *</span><span>(p2));
+</span><span>        </span><span style="color:#859900;">*</span><span>(p1 </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x8</span><span>) </span><span style="color:#859900;">= *</span><span>(</span><span style="color:#859900;">*</span><span>(p2) </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x8 </span><span style="color:#859900;">+</span><span> v2 </span><span style="color:#859900;">* </span><span style="color:#d33682;">0x18</span><span>) </span><span style="color:#859900;">+</span><span> v3;
+</span><span>        </span><span style="color:#859900;">return</span><span> p1;
+</span><span>    }
+</span><span>    </span><span style="color:#859900;">*</span><span>(p1) </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>    </span><span style="color:#859900;">return</span><span> p1;
+</span><span>}
+</span></code></pre>
+<h1 id="final-thoughts">Final Thoughts</h1>
+<p>This was an interesting compiler optimization to learn about and a surprisingly hard one to deoptimize.</p>
+<p>I had to jam some unsound constraints into the theorem prover to get the result I wanted but I think I'm okay with that.</p>
+<p>One think I'm not okay with is how the code ended up looking. It could certainly be better with some refactoring/cleanup but I think that these types of deopmitizations are ripe for a DSL to abstract away all of the implementation details.</p>
+<p>This also significantly slowed down decompilation. Primarily because I'm checking the equivalence of every statement in the original and copied loops. I'm pretty sure there are some more optimizations I can do but my impression is that there is only so much you can do when using z3. One option might be to use a custom, lightweight solver for the 80% case and fall back on z3 when necessary.</p>
+<p>I'm working on some other exciting features at the moment but I'll definitely revisit this work in the future.</p>
+</div>
+
+  <p class="meta">Posted on <span class="postdate">2024-02-27</span></p>
+</article>
+
+      </div>
+      <footer id="footer">
+        <p class="copyright">
+          
+            Powered by <a href="https://www.getzola.org/">Zola</a> and the
+            <a href="https://github.com/hulufei/solar-theme-zola">Solar</a>-theme.
+          
+        </p>
+      </footer>
+    </div>
+  </body>
+</html>
