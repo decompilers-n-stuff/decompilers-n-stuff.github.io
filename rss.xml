@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss xmlns:atom="http://www.w3.org/2005/Atom" version="2.0">
+    <channel>
+      <title>Decompilers &#x27;n Stuff</title>
+        <link>https://decompilers-n-stuff.github.io</link>
+        <description>Experiments in decompilation</description>
+        <generator>Zola</generator>
+        <language>en</language>
+        <atom:link href="https://decompilers-n-stuff.github.io/rss.xml" rel="self" type="application/rss+xml"/>
+        <lastBuildDate>Tue, 27 Feb 2024 00:00:00 +0000</lastBuildDate>
+        <item>
+            <title>Looping Un-Splitting</title>
+            <pubDate>Tue, 27 Feb 2024 00:00:00 +0000</pubDate>
+            <link>https://decompilers-n-stuff.github.io/loop-peeling/</link>
+            <guid>https://decompilers-n-stuff.github.io/loop-peeling/</guid>
+            <description>&lt;p&gt;In this post, I&#x27;ll be talking about a new compiler optimization I learned about and how I deoptimized it using z3 for nicer decompiled code.&lt;&#x2F;p&gt;
+</description>
+        </item>
+        <item>
+            <title>Decompiling blocks in Objective-C</title>
+            <pubDate>Tue, 20 Feb 2024 00:00:00 +0000</pubDate>
+            <link>https://decompilers-n-stuff.github.io/blocks/</link>
+            <guid>https://decompilers-n-stuff.github.io/blocks/</guid>
+            <description>&lt;p&gt;While decompiling some Objective-C code, I came across the following function...&lt;&#x2F;p&gt;
+</description>
+        </item>
+        <item>
+            <title>A DSL for generating source code</title>
+            <pubDate>Mon, 19 Feb 2024 00:00:00 +0000</pubDate>
+            <link>https://decompilers-n-stuff.github.io/langdefs/</link>
+            <guid>https://decompilers-n-stuff.github.io/langdefs/</guid>
+            <description>&lt;p&gt;One of the reasons I want to write a decompiler is to be able to decompile languages other than C. Although many languages descend from C and therefore their decompiler should inherit much of the same logic from a C decompiler.&lt;&#x2F;p&gt;
+</description>
+        </item>
+        <item>
+            <title>About</title>
+            <pubDate>Sun, 18 Feb 2024 00:00:00 +0000</pubDate>
+            <link>https://decompilers-n-stuff.github.io/about/</link>
+            <guid>https://decompilers-n-stuff.github.io/about/</guid>
+            <description>&lt;p&gt;This is a site where I document experiments and development in my decompiler.&lt;&#x2F;p&gt;
+&lt;p&gt;I&#x27;m learning about compilers&#x2F;decompilers as I go and reinventing the wheel lots so if I get anything wrong or if you have suggestions, let me know.&lt;&#x2F;p&gt;
+&lt;p&gt;decompilersnstuff on gmail&lt;&#x2F;p&gt;
+</description>
+        </item>
+    </channel>
+</rss>
