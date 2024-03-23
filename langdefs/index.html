@@ -194,7 +194,7 @@
 </span><span>
 </span><span>        </span><span style="color:#859900;">return </span><span>r.repr_depth
 </span></code></pre>
-<p>This does make this phase of the decompilation very inefficient since we're basically decompiling the same function multiple times. Moreso, new information can be gained on re-decompilation that forces another re-decompile. There is more to be done to smart about what/when to re-decompile and I haven't noticed lag yet but I'm sure it will affect larger functions.</p>
+<p>This does make this phase of the decompilation very inefficient since we're basically decompiling the same function multiple times. Moreso, new information can be gained on re-decompilation that forces another re-decompile. There is more to be done to be smart about what/when to re-decompile and I haven't noticed lag yet but I'm sure it will affect larger functions.</p>
 <p>The last thing to note is this line:</p>
 <pre style="background-color:#042029;color:#839496;"><code><span>expr: (method_call | expr)
 </span></code></pre>

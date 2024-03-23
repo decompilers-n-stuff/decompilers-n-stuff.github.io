@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta http-equiv="content-type" content="text/html; charset=utf-8">
+
+    <!-- Enable responsiveness on mobile devices-->
+    <!-- viewport-fit=cover is to support iPhone X rounded corners and notch in landscape-->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, viewport-fit=cover">
+
+    <title>Decompilers &#x27;n Stuff</title>
+
+    <!-- CSS -->
+    <link rel="stylesheet" href="https://decompilers-n-stuff.github.io/colors-dark.css">
+
+    
+
+    
+    
+  </head>
+  <body>
+    <header id="header">
+      <h1><a href="https:&#x2F;&#x2F;decompilers-n-stuff.github.io">Decompilers &#x27;n Stuff</a></h1>
+      <p>Experiments in decompilation</p>
+    </header>
+    <div id="page">
+      <div id="sidebar">
+        
+          
+          <nav>
+            <ul class="nav">
+              
+                
+                  <li>
+                    <a href="&#x2F;about"><span>About</span></a>
+                  </li>
+                
+                  <li>
+                    <a href="rss.xml"><span>RSS</span></a>
+                  </li>
+                
+              
+            </ul>
+          </nav>
+          
+        
+      </div>
+      <div id="content">
+        
+<article class="post">
+  <h1><a href="https:&#x2F;&#x2F;decompilers-n-stuff.github.io&#x2F;cpp&#x2F;">Are we are C++ yet?</a></h1>
+
+  <div class="post-content"><p>Yes.</p>
+<span id="continue-reading"></span>
+<p>Or at least sort of.</p>
+<p>In this post, I'll show how I used the <a href="/langdefs">DSL</a> I've been working on to decompile some simple C++ constructs.</p>
+<h2 id="the-code">The Code</h2>
+<p>This is the function we'll be decompiling (again from the Ghidra source code):</p>
+<pre data-lang="C++" style="background-color:#042029;color:#839496;" class="language-C++ "><code class="language-C++" data-lang="C++"><span style="color:#a57800;">void </span><span>EquationAnd::</span><span style="color:#268bd2;">genPattern</span><span>(</span><span style="color:#738a05;">const</span><span> vector&lt;TokenPattern&gt; </span><span style="color:#859900;">&amp;</span><span>ops) </span><span style="color:#738a05;">const
+</span><span>{
+</span><span>  left-&gt;genPattern(ops);
+</span><span>  right-&gt;genPattern(ops);
+</span><span>  resultpattern </span><span style="color:#859900;">=</span><span> left-&gt;getTokenPattern().doAnd(right-&gt;getTokenPattern());
+</span><span>}
+</span></code></pre>
+<p>I chose this function because it a) looked simple, and b) uses some key C++ constructs that I've always wanted to decompile: namely virtual method calls and vectors.</p>
+<p>Here's what the function looks like when decompiled in Ghidra:</p>
+<p><img src="/orig_cpp_ghidra_decomp.png" alt="orig_ghidra_cpp_decomp" /></p>
+<p>Hmm. Looks a little more complicated than I expected but let's dissect it.</p>
+<p>Going through the statements, the first one that stands out is the call to <code>TokenPattern::resolveTokens</code> since that doesn't appear in the source code.</p>
+<p>Looking at the x-refs to <code>resolveTokens</code>, it looks like the call to <code>doAnd</code> is being inlined from <code>TokenPattern::doAnd</code>:</p>
+<p><img src="/tokpat_doand.png" alt="tokpat_doand" /></p>
+<p>That's great but there are still a bunch of statements in the decompilation after the virtual call to <code>(*plVar3 + 0x28)</code>.</p>
+<p>To see why let's look at the last line of the source code again:</p>
+<pre data-lang="C++" style="background-color:#042029;color:#839496;" class="language-C++ "><code class="language-C++" data-lang="C++"><span>resultpattern </span><span style="color:#859900;">=</span><span> left-&gt;getTokenPattern().doAnd(right-&gt;getTokenPattern());
+</span></code></pre>
+<p>Looking at the class hierarchy, this is how <code>EquationAnd</code> is defined:</p>
+<pre data-lang="C++" style="background-color:#042029;color:#839496;" class="language-C++ "><code class="language-C++" data-lang="C++"><span style="color:#738a05;">class </span><span style="color:#268bd2;">EquationAnd </span><span>: </span><span style="color:#738a05;">public </span><span>PatternEquation {
+</span><span>  PatternEquation </span><span style="color:#859900;">*</span><span>left;
+</span><span>  PatternEquation </span><span style="color:#859900;">*</span><span>right;
+</span><span>  </span><span style="color:#859900;">...
+</span><span>}
+</span></code></pre>
+<p>where <code>PatternEquation</code> is defined as:</p>
+<pre data-lang="C++" style="background-color:#042029;color:#839496;" class="language-C++ "><code class="language-C++" data-lang="C++"><span style="color:#738a05;">class </span><span style="color:#268bd2;">PatternEquation </span><span>{
+</span><span>  int4 refcount;
+</span><span>  </span><span style="color:#738a05;">mutable</span><span> TokenPattern resultpattern;
+</span><span>  </span><span style="color:#859900;">...
+</span><span>}
+</span></code></pre>
+<p>Since <code>resultpattern</code> has type <code>TokenPattern</code> and we are assigning to it in the function, there needs to be move or copy semantics for the <code>TokenPattern</code> type since it won't fit a register.</p>
+<p>Since <code>TokenPattern::doAnd</code> also returns a <code>TokenPattern</code>, we can find these semantics in the following copy constructor:</p>
+<pre data-lang="C++" style="background-color:#042029;color:#839496;" class="language-C++ "><code class="language-C++" data-lang="C++"><span>TokenPattern::</span><span style="color:#268bd2;">TokenPattern</span><span>(</span><span style="color:#738a05;">const</span><span> TokenPattern </span><span style="color:#859900;">&amp;</span><span>tokpat)
+</span><span>{
+</span><span>  pattern </span><span style="color:#859900;">=</span><span> tokpat.</span><span style="color:#268bd2;">pattern</span><span>-&gt;simplifyClone();
+</span><span>  toklist </span><span style="color:#859900;">=</span><span> tokpat.</span><span style="color:#268bd2;">toklist</span><span>;
+</span><span>  leftellipsis </span><span style="color:#859900;">=</span><span> tokpat.</span><span style="color:#268bd2;">leftellipsis</span><span>;
+</span><span>  rightellipsis </span><span style="color:#859900;">=</span><span> tokpat.</span><span style="color:#268bd2;">rightellipsis</span><span>;
+</span><span>}
+</span></code></pre>
+<p>Looking at the decompilation of this function, we see that it's indeed most of remaining decompiled code:</p>
+<p><img src="/copy_constructor_decomp.png" alt="copy_cons_decomp" /></p>
+<p>Using all of this information, we can create structs in Ghidra for the classes and end up with the following decompilation:</p>
+<p><img src="/cpp_typed_decomp.png" alt="ghidra_final_decomp" /></p>
+<p>While this is decent, it still leaves a lot to be desired, most importantly virtual method calls.</p>
+<h2 id="decompiling-to-c">Decompiling to C++</h2>
+<p>Decompiling this function in my decompiler with the <code>C</code> frontend produces a result pretty similar to the initial Ghidra decompilation:</p>
+<pre data-lang="C++" style="background-color:#042029;color:#839496;" class="language-C++ "><code class="language-C++" data-lang="C++"><span style="color:#a57800;">void </span><span>EquationAnd::</span><span style="color:#268bd2;">genPattern</span><span>(</span><span style="color:#859900;">uint64_t </span><span>p1, </span><span style="color:#859900;">uint64_t </span><span>p2) {
+</span><span>    (</span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">*</span><span>(p1 </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x38</span><span>)) </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x10</span><span>))(</span><span style="color:#859900;">*</span><span>(p1 </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x38</span><span>), p2);
+</span><span>    (</span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">*</span><span>(p1 </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x40</span><span>)) </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x10</span><span>))(</span><span style="color:#859900;">*</span><span>(p1 </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x40</span><span>), p2);
+</span><span>    </span><span style="color:#859900;">uint64_t</span><span> v1 </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>    </span><span style="color:#859900;">uint64_t</span><span> v2 </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>    </span><span style="color:#859900;">uint64_t</span><span> v3 </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>    </span><span style="color:#859900;">uint64_t</span><span> v4 </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>    </span><span style="color:#859900;">uint8_t</span><span> v5 </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>    </span><span style="color:#859900;">uint8_t</span><span> v6 </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>    </span><span style="color:#859900;">uint64_t</span><span> v7 </span><span style="color:#859900;">= </span><span>(</span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">*</span><span>(p1 </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x38</span><span>) </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x10</span><span>)) </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x28</span><span>))(
+</span><span>        </span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">*</span><span>(p1 </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x38</span><span>) </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x10</span><span>),
+</span><span>        </span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">*</span><span>(p1 </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x40</span><span>) </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x10</span><span>),
+</span><span>        FUN_2b690(</span><span style="color:#859900;">&amp;</span><span>v3, </span><span style="color:#859900;">*</span><span>(p1 </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x38</span><span>) </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x10</span><span>, </span><span style="color:#859900;">*</span><span>(p1 </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x40</span><span>) </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x10</span><span>)
+</span><span>    );
+</span><span>    v3 </span><span style="color:#859900;">=</span><span> v7;
+</span><span>    </span><span style="color:#859900;">if </span><span>(</span><span style="color:#859900;">*</span><span>(p1 </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x10</span><span>) </span><span style="color:#859900;">!= </span><span style="color:#d33682;">0x0</span><span>) {
+</span><span>        (</span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">*</span><span>(p1 </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x10</span><span>)) </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x8</span><span>))(</span><span style="color:#859900;">*</span><span>(p1 </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x10</span><span>));
+</span><span>        v7 </span><span style="color:#859900;">=</span><span> v3;
+</span><span>    }
+</span><span>    </span><span style="color:#859900;">*</span><span>(p1 </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x10</span><span>) </span><span style="color:#859900;">= </span><span>(</span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">*</span><span>(v7) </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x10</span><span>))(v7);
+</span><span>    </span><span style="color:#859900;">if </span><span>(p1 </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x10 </span><span style="color:#859900;">!= &amp;</span><span>v3) {
+</span><span>        assign(p1 </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x18</span><span>, v4, v1);
+</span><span>    }
+</span><span>    </span><span style="color:#859900;">*</span><span>(p1 </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x30</span><span>) </span><span style="color:#859900;">=</span><span> v5;
+</span><span>    </span><span style="color:#859900;">*</span><span>(p1 </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x31</span><span>) </span><span style="color:#859900;">=</span><span> v6;
+</span><span>    </span><span style="color:#859900;">if </span><span>(v3 </span><span style="color:#859900;">!= </span><span style="color:#d33682;">0x0</span><span>) {
+</span><span>        (</span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">*</span><span>(v3) </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x8</span><span>))(v3);
+</span><span>    }
+</span><span>    </span><span style="color:#859900;">if </span><span>(v4 </span><span style="color:#859900;">!= </span><span style="color:#d33682;">0x0</span><span>) {
+</span><span>        v1 </span><span style="color:#859900;">=</span><span> v4;
+</span><span>        </span><span style="color:#859900;">delete</span><span>(v4);
+</span><span>    }
+</span><span>    </span><span style="color:#859900;">return</span><span>;
+</span><span>}
+</span></code></pre>
+<p>One thing to note is that using the reads later in the function, I split the vectorized stack writes (the <code>ZEXT816</code> in Ghidra) which will make the later result a bit nicer.</p>
+<p>As a first simple rule, we can detect that this function is actually a method and rename <code>p1</code> to <code>this</code>:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>method:
+</span><span>    repr:
+</span><span>    ```
+</span><span>    $return_type $method_name(${format_func_params(args)}) {
+</span><span>        $body
+</span><span>    }
+</span><span>    ```
+</span><span>    return_type: datatype
+</span><span>    method_name: symbol
+</span><span>    this: variable
+</span><span>    args: variable*
+</span><span>    body: block
+</span><span>    priority: 0
+</span><span>    from:
+</span><span>    ```
+</span><span>    AST_FUNC
+</span><span>    |
+</span><span>    +--- _      =&gt; $method_name: $self like &quot;.+::.+&quot;
+</span><span>    +--- _
+</span><span>         |
+</span><span>         +--- _ =&gt; $this
+</span><span>         +--- * =&gt; $args
+</span><span>    +--- *
+</span><span>    ```
+</span><span>    post_actions:
+</span><span>        * rename($this, &quot;this&quot;)
+</span><span>
+</span></code></pre>
+<p>In the future, I'd like to use the demangled name to re-type the arguments/return type but this will do for now.</p>
+<p>Applying this rule gives basically the same result but with a <code>this</code> parameter:</p>
+<pre data-lang="C++" style="background-color:#042029;color:#839496;" class="language-C++ "><code class="language-C++" data-lang="C++"><span style="color:#a57800;">void </span><span>EquationAnd::</span><span style="color:#268bd2;">genPattern</span><span>(</span><span style="color:#859900;">uint64_t </span><span>p2) {
+</span><span>    (</span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">*</span><span>(</span><span style="color:#268bd2;">this </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x38</span><span>)) </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x10</span><span>))(</span><span style="color:#859900;">*</span><span>(</span><span style="color:#268bd2;">this </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x38</span><span>), p2);
+</span><span>    (</span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">*</span><span>(</span><span style="color:#268bd2;">this </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x40</span><span>)) </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x10</span><span>))(</span><span style="color:#859900;">*</span><span>(</span><span style="color:#268bd2;">this </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x40</span><span>), p2);
+</span><span>    </span><span style="color:#859900;">...
+</span><span>}
+</span></code></pre>
+<p>Next thing we can do is make a rule for field accesses:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>class_field:
+</span><span>    repr: ${receiver}-&gt;${lookup_field_name(receiver, field_off)}
+</span><span>    receiver: expr
+</span><span>    field_off: number
+</span><span>    priority: 1
+</span><span>    from:
+</span><span>    ```
+</span><span>    AST_DEREF
+</span><span>    |
+</span><span>    +--- AST_BINARY      =&gt; $add_expr: ${self[op]} == &quot;+&quot;
+</span><span>         |
+</span><span>         +--- _          =&gt; $receiver: $self isa &quot;CppClass *&quot;
+</span><span>         +--- AST_NUMBER =&gt; $field_off
+</span><span>    ```
+</span><span>    post_actions:
+</span><span>        * retype($self, lookup_field_type($receiver, $field_off))
+</span></code></pre>
+<p>Where the <code>lookup_field_name</code> and <code>lookup_field_type</code> actions use the type definitions (basically copy-pasted from the source) to find the field for a given offset.</p>
+<p>Re-decompiling produces a still more readable function:</p>
+<pre data-lang="C++" style="background-color:#042029;color:#839496;" class="language-C++ "><code class="language-C++" data-lang="C++"><span style="color:#a57800;">void </span><span>EquationAnd::</span><span style="color:#268bd2;">genPattern</span><span>(</span><span style="color:#859900;">uint64_t </span><span>p2) {
+</span><span>    (</span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">*</span><span>(</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">left</span><span>) </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x10</span><span>))(</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">left</span><span>, p2);
+</span><span>    (</span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">*</span><span>(</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">right</span><span>) </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x10</span><span>))(</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">right</span><span>, p2);
+</span><span>    </span><span style="color:#859900;">uint64_t</span><span> v1 </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>    </span><span style="color:#859900;">uint64_t</span><span> v2 </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>    </span><span style="color:#859900;">uint64_t</span><span> v3 </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>    </span><span style="color:#859900;">uint64_t</span><span> v4 </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>    </span><span style="color:#859900;">uint8_t</span><span> v5 </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>    </span><span style="color:#859900;">uint8_t</span><span> v6 </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>    </span><span style="color:#859900;">uint64_t</span><span> v7 </span><span style="color:#859900;">= </span><span>(</span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">*</span><span>(</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">left</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern</span><span>) </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x28</span><span>))(
+</span><span>        </span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">left</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern</span><span>,
+</span><span>        </span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">right</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern</span><span>,
+</span><span>        FUN_2b690(</span><span style="color:#859900;">&amp;</span><span>v3, </span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">left </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x10</span><span>, </span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">right </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x10</span><span>)
+</span><span>    );
+</span><span>    v3 </span><span style="color:#859900;">=</span><span> v7;
+</span><span>    </span><span style="color:#859900;">if </span><span>(</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern </span><span style="color:#859900;">!= </span><span style="color:#d33682;">0x0</span><span>) {
+</span><span>        (</span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">*</span><span>(</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern</span><span>) </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x8</span><span>))(</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern</span><span>);
+</span><span>        v7 </span><span style="color:#859900;">=</span><span> v3;
+</span><span>    }
+</span><span>    </span><span style="color:#859900;">*</span><span>(</span><span style="color:#268bd2;">this </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x10</span><span>) </span><span style="color:#859900;">= </span><span>(</span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">*</span><span>(v7) </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x10</span><span>))(v7);
+</span><span>    </span><span style="color:#859900;">if </span><span>(</span><span style="color:#268bd2;">this </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x10 </span><span style="color:#859900;">!= &amp;</span><span>v3) {
+</span><span>        assign(</span><span style="color:#268bd2;">this </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x18</span><span>, v4, v1);
+</span><span>    }
+</span><span>    </span><span style="color:#859900;">*</span><span>(</span><span style="color:#268bd2;">this </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x30</span><span>) </span><span style="color:#859900;">=</span><span> v5;
+</span><span>    </span><span style="color:#859900;">*</span><span>(</span><span style="color:#268bd2;">this </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x31</span><span>) </span><span style="color:#859900;">=</span><span> v6;
+</span><span>    </span><span style="color:#859900;">if </span><span>(v3 </span><span style="color:#859900;">!= </span><span style="color:#d33682;">0x0</span><span>) {
+</span><span>        (</span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">*</span><span>(v3) </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x8</span><span>))(v3);
+</span><span>    }
+</span><span>    </span><span style="color:#859900;">if </span><span>(v4 </span><span style="color:#859900;">!= </span><span style="color:#d33682;">0x0</span><span>) {
+</span><span>        v1 </span><span style="color:#859900;">=</span><span> v4;
+</span><span>        </span><span style="color:#859900;">delete</span><span>(v4);
+</span><span>    }
+</span><span>    </span><span style="color:#859900;">return</span><span>;
+</span><span>}
+</span></code></pre>
+<p>You might notice that the function is often using the address of a field instead of dereferencing it (i.e. <code>this-&gt;left + 0x10</code>). Adding a rule for this:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>addrof_class_field:
+</span><span>    repr: &amp;$receiver-&gt;${lookup_field_name(receiver, field_off)}
+</span><span>    receiver: expr
+</span><span>    field_off: number
+</span><span>    priority: 2
+</span><span>    from:
+</span><span>    ```
+</span><span>    AST_BINARY      =&gt; $add_expr: ${self[op]} == &quot;+&quot;
+</span><span>    |
+</span><span>    +--- _          =&gt; $receiver: $self isa &quot;CppClass *&quot;
+</span><span>    +--- AST_NUMBER =&gt; $field_off
+</span><span>    ```
+</span><span>    post_actions:
+</span><span>        * retype($self, pointer_to(lookup_field_type($receiver, $field_off)))
+</span></code></pre>
+<p>And the output looks pretty close to the typed Ghidra output:</p>
+<pre data-lang="C++" style="background-color:#042029;color:#839496;" class="language-C++ "><code class="language-C++" data-lang="C++"><span style="color:#a57800;">void </span><span>EquationAnd::</span><span style="color:#268bd2;">genPattern</span><span>(</span><span style="color:#859900;">uint64_t </span><span>p2) {
+</span><span>    (</span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">*</span><span>(</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">left</span><span>) </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x10</span><span>))(</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">left</span><span>, p2);
+</span><span>    (</span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">*</span><span>(</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">right</span><span>) </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x10</span><span>))(</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">right</span><span>, p2);
+</span><span>    </span><span style="color:#859900;">uint64_t</span><span> v1 </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>    </span><span style="color:#859900;">uint64_t</span><span> v2 </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>    </span><span style="color:#859900;">uint64_t</span><span> v3 </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>    </span><span style="color:#859900;">uint64_t</span><span> v4 </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>    </span><span style="color:#859900;">uint8_t</span><span> v5 </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>    </span><span style="color:#859900;">uint8_t</span><span> v6 </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>    </span><span style="color:#859900;">uint64_t</span><span> v7 </span><span style="color:#859900;">= </span><span>(</span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">*</span><span>(</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">left</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern</span><span>) </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x28</span><span>))(
+</span><span>        </span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">left</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern</span><span>,
+</span><span>        </span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">right</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern</span><span>,
+</span><span>        FUN_2b690(
+</span><span>            </span><span style="color:#859900;">&amp;</span><span>v3,
+</span><span>            </span><span style="color:#859900;">&amp;</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">left</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern</span><span>,
+</span><span>            </span><span style="color:#859900;">&amp;</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">right</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern
+</span><span>        )
+</span><span>    );
+</span><span>    v3 </span><span style="color:#859900;">=</span><span> v7;
+</span><span>    </span><span style="color:#859900;">if </span><span>(</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern </span><span style="color:#859900;">!= </span><span style="color:#d33682;">0x0</span><span>) {
+</span><span>        (</span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">*</span><span>(</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern</span><span>) </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x8</span><span>))(</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern</span><span>);
+</span><span>        v7 </span><span style="color:#859900;">=</span><span> v3;
+</span><span>    }
+</span><span>    </span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">&amp;</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern</span><span>) </span><span style="color:#859900;">= </span><span>(</span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">*</span><span>(v7) </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x10</span><span>))(v7);
+</span><span>    </span><span style="color:#859900;">if </span><span>(</span><span style="color:#859900;">&amp;</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern </span><span style="color:#859900;">!= &amp;</span><span>v3) {
+</span><span>        assign(</span><span style="color:#859900;">&amp;</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern</span><span>.</span><span style="color:#268bd2;">toklist</span><span>, v4, v1);
+</span><span>    }
+</span><span>    </span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">&amp;</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern</span><span>.</span><span style="color:#268bd2;">leftellipsis</span><span>) </span><span style="color:#859900;">=</span><span> v5;
+</span><span>    </span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">&amp;</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern</span><span>.</span><span style="color:#268bd2;">rightellipsis</span><span>) </span><span style="color:#859900;">=</span><span> v6;
+</span><span>    </span><span style="color:#859900;">if </span><span>(v3 </span><span style="color:#859900;">!= </span><span style="color:#d33682;">0x0</span><span>) {
+</span><span>        (</span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">*</span><span>(v3) </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x8</span><span>))(v3);
+</span><span>    }
+</span><span>    </span><span style="color:#859900;">if </span><span>(v4 </span><span style="color:#859900;">!= </span><span style="color:#d33682;">0x0</span><span>) {
+</span><span>        v1 </span><span style="color:#859900;">=</span><span> v4;
+</span><span>        </span><span style="color:#859900;">delete</span><span>(v4);
+</span><span>    }
+</span><span>    </span><span style="color:#859900;">return</span><span>;
+</span><span>}
+</span></code></pre>
+<p>Now we can tackle the virtual calls:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>virtual_method_call:
+</span><span>    repr: ${lookup_receiver(receiver)}-&gt;${impls[0]}(${*args&lt;, &gt;})
+</span><span>    receiver: expr
+</span><span>    impls: call_target*
+</span><span>    vtable_off: number
+</span><span>    args: expr*
+</span><span>    priority: 0
+</span><span>    from:
+</span><span>    ```
+</span><span>    AST_INDIRECT_CALL
+</span><span>    |
+</span><span>    +--- AST_DEREF
+</span><span>         |
+</span><span>         +--- AST_BINARY
+</span><span>              |
+</span><span>              +--- AST_DEREF
+</span><span>                   |
+</span><span>                   +--- _     =&gt; $receiver: $self isa &quot;CppClass *&quot;
+</span><span>              |
+</span><span>              +--- AST_NUMBER =&gt; $vtable_off =&gt; lookup_method($receiver, $self) =&gt; lookup_impls($receiver, $self) =&gt; $impls
+</span><span>    |
+</span><span>    +--- _                    =&gt; $actual_receiver: $self == $receiver
+</span><span>    +--- *                    =&gt; $args
+</span><span>    ```
+</span><span>    post_actions:
+</span><span>        * retype_method($self, $receiver, $vtable_off, $args)
+</span></code></pre>
+<p>Where there is a chain of operators acting on the vtable offset to</p>
+<ol>
+<li>
+<p>Bind to the name $vtable_off: <code>$vtable_off =&gt;</code></p>
+</li>
+<li>
+<p>Index into the vtable using that offset: <code>lookup_method($receiver, $self) =&gt;</code></p>
+</li>
+<li>
+<p>Traverse the receiver's class hierarchy to find all possible addresses of the method: <code>lookup_impls($receiver, $self) =&gt;</code></p>
+</li>
+<li>
+<p>Bind to the name $impls: <code>$impls</code></p>
+</li>
+</ol>
+<p>And since <code>impls</code> is declared as <code>call_target*</code> (read list of <code>call_target</code>), and <code>call_target</code> has a <code>references</code> attribute:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>call_target:
+</span><span>    from: ast_symbol
+</span><span>    references: addrof($self)
+</span></code></pre>
+<p>The virtual method name has a set of references that can be used for navigation.</p>
+<p>I'm still unsure of what the user interaction for this sort of navigation should look like. My current thought is to display a bunch of mini-maps of the possible x-refs to choose from but I'll see how that works once I finally start working on the GUI again.</p>
+<p>The other thing to note here is that I'm currently declaring the virtual methods like in the header file:</p>
+<pre data-lang="C++" style="background-color:#042029;color:#839496;" class="language-C++ "><code class="language-C++" data-lang="C++"><span style="color:#738a05;">class </span><span style="color:#268bd2;">PatternEquation </span><span>{
+</span><span>    </span><span style="color:#859900;">uint32_t</span><span> refcount;
+</span><span>    </span><span style="color:#859900;">uint32_t</span><span> padding;
+</span><span>    TokenPattern resultpattern;
+</span><span>
+</span><span>    </span><span style="color:#738a05;">virtual </span><span style="color:#a57800;">void </span><span style="color:#859900;">~</span><span>PatternEquation(</span><span style="color:#a57800;">void</span><span>);
+</span><span>    </span><span style="color:#738a05;">virtual </span><span style="color:#a57800;">void </span><span style="color:#859900;">~</span><span>PatternEquation(</span><span style="color:#a57800;">void</span><span>);
+</span><span>    </span><span style="color:#738a05;">virtual </span><span style="color:#a57800;">void </span><span style="color:#268bd2;">genPattern</span><span>(vector&lt;TokenPattern&gt; </span><span style="color:#859900;">&amp;</span><span>ops) </span><span style="color:#859900;">= </span><span style="color:#d33682;">0</span><span>;
+</span><span>    </span><span style="color:#a57800;">void </span><span style="color:#268bd2;">release</span><span>(PatternEquation </span><span style="color:#859900;">*</span><span>pateq);
+</span><span>}
+</span><span>
+</span><span style="color:#738a05;">class </span><span style="color:#268bd2;">EquationAnd</span><span>: PatternEquation {
+</span><span>    PatternEquation </span><span style="color:#859900;">*</span><span>left;
+</span><span>    PatternEquation </span><span style="color:#859900;">*</span><span>right;
+</span><span>
+</span><span>    </span><span style="color:#738a05;">virtual </span><span style="color:#a57800;">void </span><span style="color:#859900;">~</span><span>EquationAnd(</span><span style="color:#a57800;">void</span><span>);
+</span><span>    </span><span style="color:#738a05;">virtual </span><span style="color:#a57800;">void </span><span style="color:#859900;">~</span><span>EquationAnd(</span><span style="color:#a57800;">void</span><span>);
+</span><span>    </span><span style="color:#738a05;">virtual </span><span style="color:#a57800;">void </span><span style="color:#268bd2;">genPattern</span><span>(vector&lt;TokenPattern&gt; </span><span style="color:#859900;">&amp;</span><span>ops);
+</span><span>};
+</span></code></pre>
+<p>but I'd like to in the future automatically parse the vtable entries if the vtable address is known. (As an aside, it is known here which is how I'm able to index into the vtable to find any concrete implementations).</p>
+<p>With all that caveat-ing out of the way, we can see that the function is really starting to come together:</p>
+<pre data-lang="C++" style="background-color:#042029;color:#839496;" class="language-C++ "><code class="language-C++" data-lang="C++"><span style="color:#a57800;">void </span><span>EquationAnd::</span><span style="color:#268bd2;">genPattern</span><span>(vector&lt;TokenPattern&gt; </span><span style="color:#859900;">&amp; </span><span>p2) {
+</span><span>    </span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">left</span><span>-&gt;genPattern(p2);
+</span><span>    </span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">right</span><span>-&gt;genPattern(p2);
+</span><span>    v3.</span><span style="color:#268bd2;">toklist</span><span>.</span><span style="color:#268bd2;">last </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>    v3.</span><span style="color:#268bd2;">toklist</span><span>.</span><span style="color:#268bd2;">end </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>    v3.</span><span style="color:#268bd2;">pattern </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>    v3.</span><span style="color:#268bd2;">toklist</span><span>.</span><span style="color:#268bd2;">first </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>    v3.</span><span style="color:#268bd2;">leftellipsis </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>    v3.</span><span style="color:#268bd2;">rightellipsis </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>    Pattern </span><span style="color:#859900;">*</span><span> v7 </span><span style="color:#859900;">= </span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">left</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern</span><span>.</span><span style="color:#268bd2;">pattern</span><span>-&gt;doAnd(
+</span><span>        </span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">right</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern</span><span>,
+</span><span>        FUN_2b690(
+</span><span>            </span><span style="color:#859900;">&amp;</span><span>v3,
+</span><span>            </span><span style="color:#859900;">&amp;</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">left</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern</span><span>,
+</span><span>            </span><span style="color:#859900;">&amp;</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">right</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern
+</span><span>        )
+</span><span>    );
+</span><span>    v3.</span><span style="color:#268bd2;">pattern </span><span style="color:#859900;">=</span><span> v7;
+</span><span>    </span><span style="color:#859900;">if </span><span>(</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern </span><span style="color:#859900;">!= </span><span style="color:#d33682;">0x0</span><span>) {
+</span><span>        </span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern</span><span>-&gt;~Pattern();
+</span><span>        v7 </span><span style="color:#859900;">=</span><span> v3.</span><span style="color:#268bd2;">pattern</span><span>;
+</span><span>    }
+</span><span>    </span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">&amp;</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern</span><span>) </span><span style="color:#859900;">=</span><span> v7-&gt;simplifyClone();
+</span><span>    </span><span style="color:#859900;">if </span><span>(</span><span style="color:#859900;">&amp;</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern </span><span style="color:#859900;">!= &amp;</span><span>v3) {
+</span><span>        assign(
+</span><span>            </span><span style="color:#859900;">&amp;</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern</span><span>.</span><span style="color:#268bd2;">toklist</span><span>,
+</span><span>            v3.</span><span style="color:#268bd2;">toklist</span><span>.</span><span style="color:#268bd2;">first</span><span>,
+</span><span>            v3.</span><span style="color:#268bd2;">toklist</span><span>.</span><span style="color:#268bd2;">last
+</span><span>        );
+</span><span>    }
+</span><span>    </span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">&amp;</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern</span><span>.</span><span style="color:#268bd2;">leftellipsis</span><span>) </span><span style="color:#859900;">=</span><span> v3.</span><span style="color:#268bd2;">leftellipsis</span><span>;
+</span><span>    </span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">&amp;</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern</span><span>.</span><span style="color:#268bd2;">rightellipsis</span><span>) </span><span style="color:#859900;">=</span><span> v3.</span><span style="color:#268bd2;">rightellipsis</span><span>;
+</span><span>    </span><span style="color:#859900;">if </span><span>(v3.</span><span style="color:#268bd2;">pattern </span><span style="color:#859900;">!= </span><span style="color:#d33682;">0x0</span><span>) {
+</span><span>        v3.</span><span style="color:#268bd2;">pattern</span><span>-&gt;~Pattern();
+</span><span>    }
+</span><span>    </span><span style="color:#859900;">if </span><span>(v3.</span><span style="color:#268bd2;">toklist</span><span>.</span><span style="color:#268bd2;">first </span><span style="color:#859900;">!= </span><span style="color:#d33682;">0x0</span><span>) {
+</span><span>        v3.</span><span style="color:#268bd2;">toklist</span><span>.</span><span style="color:#268bd2;">last </span><span style="color:#859900;">=</span><span> v3.</span><span style="color:#268bd2;">toklist</span><span>.</span><span style="color:#268bd2;">first</span><span>;
+</span><span>        </span><span style="color:#859900;">delete</span><span>(v3.</span><span style="color:#268bd2;">toklist</span><span>.</span><span style="color:#268bd2;">first</span><span>);
+</span><span>    }
+</span><span>    </span><span style="color:#859900;">return</span><span>;
+</span><span>}
+</span></code></pre>
+<p>A big reason why the method looks a lot better now is the <code>retype_method</code> post_action on the <code>virtual_method_call</code> node which sets the types of the arguments/return value according to the method signature. These types make it so that other parts of the tree can be matched to nodes in the langdef.</p>
+<p>There is however something incorrect with this decompilation:</p>
+<pre data-lang="C++" style="background-color:#042029;color:#839496;" class="language-C++ "><code class="language-C++" data-lang="C++"><span style="color:#a57800;">void </span><span>EquationAnd::</span><span style="color:#268bd2;">genPattern</span><span>(vector&lt;TokenPattern&gt; </span><span style="color:#859900;">&amp; </span><span>p2) {
+</span><span>    </span><span style="color:#859900;">...
+</span><span>    </span><span style="color:#859900;">if </span><span>(</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern </span><span style="color:#859900;">!= </span><span style="color:#d33682;">0x0</span><span>) {
+</span><span>        </span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern</span><span>-&gt;~Pattern();
+</span><span>        v7 </span><span style="color:#859900;">=</span><span> v3.</span><span style="color:#268bd2;">pattern</span><span>;
+</span><span>    }
+</span><span>    </span><span style="color:#859900;">...
+</span><span>}
+</span></code></pre>
+<p>Namely that the <code>~Pattern</code> destructor is being called on <code>this-&gt;resultpattern</code> which has type <code>TokenPattern</code>!</p>
+<p>To figure out why this is happening, let's look back at the memory accesses happening here:</p>
+<pre data-lang="C++" style="background-color:#042029;color:#839496;" class="language-C++ "><code class="language-C++" data-lang="C++"><span style="color:#a57800;">void </span><span>EquationAnd::</span><span style="color:#268bd2;">genPattern</span><span>(vector&lt;TokenPattern&gt; </span><span style="color:#859900;">&amp; </span><span>p2) {
+</span><span>    </span><span style="color:#859900;">...
+</span><span>    </span><span style="color:#859900;">if </span><span>(</span><span style="color:#859900;">*</span><span>(</span><span style="color:#268bd2;">this </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x10</span><span>) </span><span style="color:#859900;">!= </span><span style="color:#d33682;">0x0</span><span>) {
+</span><span>        (</span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">*</span><span>(</span><span style="color:#268bd2;">this </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x10</span><span>)) </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x8</span><span>))(</span><span style="color:#859900;">*</span><span>(</span><span style="color:#268bd2;">this </span><span style="color:#859900;">+ </span><span style="color:#d33682;">0x10</span><span>));
+</span><span>        v7 </span><span style="color:#859900;">=</span><span> v3;
+</span><span>    }
+</span><span>    </span><span style="color:#859900;">...
+</span><span>}
+</span></code></pre>
+<p>and expand what <code>EquationAnd</code> actually looks like in memory:</p>
+<pre data-lang="C++" style="background-color:#042029;color:#839496;" class="language-C++ "><code class="language-C++" data-lang="C++"><span style="color:#738a05;">class </span><span style="color:#268bd2;">EquationAnd </span><span>{
+</span><span>    int4 refcount;        </span><span style="color:#586e75;">// +0x0 -- from superclass PatternEquation
+</span><span>                          </span><span style="color:#586e75;">// +0x4 -- padding
+</span><span>    {                     </span><span style="color:#586e75;">// +0x10 -- resultpattern
+</span><span>        Pattern </span><span style="color:#859900;">*</span><span>pattern; </span><span style="color:#586e75;">// +0x10 -- resultpattern.pattern
+</span><span>    }
+</span><span>}
+</span></code></pre>
+<p>Since our DSL is dumb, it just sees the offset <code>0x10</code>, looks up the class field for that offset, and finds <code>resultpattern</code>. But this makes no sense because we are dereferencing it and <code>resultpattern</code> has type <code>TokenPattern</code> which is not a pointer.</p>
+<p>The offset <code>0x10</code> in this case is referring to <code>resultpattern.pattern</code> since they have the same offset in memory.</p>
+<p>In the future, I'd like to have some automated analysis that deals with this but for now, we can write a rule like so:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>transparent_first_class_field:
+</span><span>    repr: $receiver-&gt;${lookup_field_name(receiver, field_off)}.${lookup_field_name(field_type, 0)}
+</span><span>    field_type: variable
+</span><span>    receiver: variable
+</span><span>    field_off: number
+</span><span>    priority: 1
+</span><span>    from:
+</span><span>    ```
+</span><span>    AST_DEREF
+</span><span>    |
+</span><span>    +--- AST_BINARY      =&gt; $field_type: $self isa CppClass
+</span><span>         |
+</span><span>         +--- _          =&gt; $receiver: $self isa &quot;CppClass *&quot;
+</span><span>         +--- AST_NUMBER =&gt; $field_off
+</span><span>    ```
+</span><span>    post_actions:
+</span><span>        * retype($self, lookup_field_type($field_type, 0))
+</span></code></pre>
+<p>which detects when a class (not a pointer to class) is dereferenced. It also importantly re-types the dereferenced expression to be the type of the field type (e.g. <code>Pattern *</code> for <code>resultpattern</code>).</p>
+<p>Using this rule fixes the destructor call:</p>
+<pre data-lang="C++" style="background-color:#042029;color:#839496;" class="language-C++ "><code class="language-C++" data-lang="C++"><span>    </span><span style="color:#859900;">...
+</span><span>    </span><span style="color:#859900;">if </span><span>(</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern </span><span style="color:#859900;">!= </span><span style="color:#d33682;">0x0</span><span>) {
+</span><span>        </span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern</span><span>.</span><span style="color:#268bd2;">pattern</span><span>-&gt;~Pattern();
+</span><span>        v7 </span><span style="color:#859900;">=</span><span> v3.</span><span style="color:#268bd2;">pattern</span><span>;
+</span><span>    }
+</span><span>    </span><span style="color:#859900;">...
+</span></code></pre>
+<p>but it doesn't fix the access in the condition since <code>this-&gt;resultpattern</code> isn't dereferenced!</p>
+<p>Inspecting the types of this statement shows how we can fix this:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>TypedASTIf
+</span><span>  TypedASTBinaryExpr: uint64_t
+</span><span>    TypedASTDerefExpr: Pattern *
+</span><span>      TypedASTBinaryExpr: TokenPattern *
+</span><span>        this
+</span><span>        0x10
+</span><span>    0x0
+</span><span>  TypedASTBlock
+</span><span>    ...
+</span></code></pre>
+<p>Since the type of the <code>DerefExpr</code> was correctly re-typed to <code>Pattern *</code> from the previous rule and the <code>BinaryExpr</code> has type <code>TokenPattern *</code>, we can write a rule that looks like this:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>transparent_first_class_field2:
+</span><span>    repr: $receiver.${lookup_field_name(receiver, 0)}
+</span><span>    receiver: expr
+</span><span>    priority: 0
+</span><span>    from:
+</span><span>    ```
+</span><span>    AST_DEREF =&gt; $deref =&gt; typeof($self) =&gt; $deref_type: $deref isa &quot;CppClass *&quot;, $deref_type == $first_field_type
+</span><span>    |
+</span><span>    +--- _    =&gt; $receiver =&gt; lookup_field_type($self, 0) =&gt; $first_field_type
+</span><span>    ```
+</span></code></pre>
+<p>Please forgive the poor naming.</p>
+<p>Also this needs to be fixed but matched variables get bound (i.e. <code>=&gt; $first_field_type</code>) <em>after</em> their children have been matched. Therefore, in the constraint on the deref, we can use <code>first_field_type</code> but we couldn't use <code>deref_type</code> in a constraint on the deref's pointer since it wouldn't've been bound yet.</p>
+<p>Anyways, using this rule in conjunction with a rule to beautify destructor calls gives us what we want:</p>
+<pre data-lang="C++" style="background-color:#042029;color:#839496;" class="language-C++ "><code class="language-C++" data-lang="C++"><span>    </span><span style="color:#859900;">...
+</span><span>    </span><span style="color:#859900;">if </span><span>(</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern</span><span>.</span><span style="color:#268bd2;">pattern </span><span style="color:#859900;">!= </span><span style="color:#d33682;">0x0</span><span>) {
+</span><span>        </span><span style="color:#859900;">~</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern</span><span>.pattern();
+</span><span>        v7 </span><span style="color:#859900;">=</span><span> v3.</span><span style="color:#268bd2;">pattern</span><span>;
+</span><span>    }
+</span><span>    </span><span style="color:#859900;">...
+</span></code></pre>
+<p>And since this post is already too long, I'll skip to the end result after adding some more rules to hide the conditional destructor calls, fixup method calls, etc:</p>
+<pre data-lang="C++" style="background-color:#042029;color:#839496;" class="language-C++ "><code class="language-C++" data-lang="C++"><span style="color:#a57800;">void </span><span>EquationAnd::</span><span style="color:#268bd2;">genPattern</span><span>(vector&lt;TokenPattern&gt; </span><span style="color:#859900;">&amp; </span><span>p2) {
+</span><span>    </span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">left</span><span>-&gt;genPattern(p2);
+</span><span>    </span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">right</span><span>-&gt;genPattern(p2);
+</span><span>    v3.</span><span style="color:#268bd2;">toklist</span><span>.</span><span style="color:#268bd2;">last </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>    v3.</span><span style="color:#268bd2;">toklist</span><span>.</span><span style="color:#268bd2;">end </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>    v3.</span><span style="color:#268bd2;">pattern </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>    v3.</span><span style="color:#268bd2;">toklist</span><span>.</span><span style="color:#268bd2;">first </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>    v3.</span><span style="color:#268bd2;">leftellipsis </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>    v3.</span><span style="color:#268bd2;">rightellipsis </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>    Pattern </span><span style="color:#859900;">*</span><span> v7 </span><span style="color:#859900;">= </span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">left</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern</span><span>.</span><span style="color:#268bd2;">pattern</span><span>-&gt;doAnd(
+</span><span>        </span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">right</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern</span><span>,
+</span><span>        v3.resolveTokens(
+</span><span>            </span><span style="color:#859900;">&amp;</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">left</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern</span><span>,
+</span><span>            </span><span style="color:#859900;">&amp;</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">right</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern
+</span><span>        )
+</span><span>    );
+</span><span>    v3.</span><span style="color:#268bd2;">pattern </span><span style="color:#859900;">=</span><span> v7;
+</span><span>    </span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">&amp;</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern</span><span>) </span><span style="color:#859900;">=</span><span> v7-&gt;simplifyClone();
+</span><span>    </span><span style="color:#859900;">if </span><span>(</span><span style="color:#859900;">&amp;</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern </span><span style="color:#859900;">!= &amp;</span><span>v3) {
+</span><span>        </span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern</span><span>.</span><span style="color:#268bd2;">toklist</span><span>.assign(
+</span><span>            v3.</span><span style="color:#268bd2;">toklist</span><span>.</span><span style="color:#268bd2;">first</span><span>,
+</span><span>            v3.</span><span style="color:#268bd2;">toklist</span><span>.</span><span style="color:#268bd2;">last
+</span><span>        );
+</span><span>    }
+</span><span>    </span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">&amp;</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern</span><span>.</span><span style="color:#268bd2;">leftellipsis</span><span>) </span><span style="color:#859900;">=</span><span> v3.</span><span style="color:#268bd2;">leftellipsis</span><span>;
+</span><span>    </span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">&amp;</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">resultpattern</span><span>.</span><span style="color:#268bd2;">rightellipsis</span><span>) </span><span style="color:#859900;">=</span><span> v3.</span><span style="color:#268bd2;">rightellipsis</span><span>;
+</span><span>    </span><span style="color:#859900;">return</span><span>;
+</span><span>}
+</span></code></pre>
+<p>Looks pretty good if you ask me!</p>
+<h3 id="next-steps-inlining">Next Steps: Inlining</h3>
+<p>A possible next step to take here is to outline the <code>TokenPattern</code> copy constructor.</p>
+<p>I initially thought this wouldn't be too hard but then I decompiled the constructor:</p>
+<pre data-lang="C++" style="background-color:#042029;color:#839496;" class="language-C++ "><code class="language-C++" data-lang="C++"><span style="color:#a57800;">void </span><span>TokenPattern::</span><span style="color:#268bd2;">TokenPattern</span><span>(TokenPattern </span><span style="color:#859900;">* </span><span>p2) {
+</span><span>    </span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">&amp;</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">toklist</span><span>) </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>    </span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">&amp;</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">toklist</span><span>.</span><span style="color:#268bd2;">end</span><span>) </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span><span>    </span><span style="color:#859900;">*</span><span>(</span><span style="color:#268bd2;">this</span><span>) </span><span style="color:#859900;">=</span><span> p2.</span><span style="color:#268bd2;">pattern</span><span>-&gt;simplifyClone();
+</span><span>    </span><span style="color:#859900;">if </span><span>(</span><span style="color:#268bd2;">this </span><span style="color:#859900;">!=</span><span> p2) {
+</span><span>        </span><span style="color:#859900;">&amp;</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">toklist</span><span>.assign(p2-&gt;</span><span style="color:#268bd2;">toklist</span><span>.</span><span style="color:#268bd2;">first</span><span>, p2-&gt;</span><span style="color:#268bd2;">toklist</span><span>.</span><span style="color:#268bd2;">last</span><span>);
+</span><span>    }
+</span><span>    </span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">&amp;</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">leftellipsis</span><span>) </span><span style="color:#859900;">=</span><span> p2-&gt;</span><span style="color:#268bd2;">leftellipsis</span><span>;
+</span><span>    </span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">&amp;</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">rightellipsis</span><span>) </span><span style="color:#859900;">=</span><span> p2-&gt;</span><span style="color:#268bd2;">rightellipsis</span><span>;
+</span><span>    </span><span style="color:#859900;">return</span><span>;
+</span><span>}
+</span></code></pre>
+<p>While this looks very similar to the inlined statements, there are a couple of subtleties stopping us from directly creating a stencil/template from this function and matching it in <code>genPattern</code>.</p>
+<p>The first is the line</p>
+<pre data-lang="C++" style="background-color:#042029;color:#839496;" class="language-C++ "><code class="language-C++" data-lang="C++"><span>    </span><span style="color:#859900;">*</span><span>(</span><span style="color:#859900;">&amp;</span><span style="color:#268bd2;">this</span><span>-&gt;</span><span style="color:#268bd2;">toklist</span><span>) </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0</span><span>;
+</span></code></pre>
+<p>It doesn't show up in the decompiled output (it probably should) but this is actually a 16-byte vectorized write. We were able to unvectorize this write in <code>genPattern</code> because of the later reads but there are no such reads in this function so for now it stays vectorized.</p>
+<p>In addition, LLVM optimized <code>genPattern</code> <em>after</em> it inlined <code>TokenPattern::TokenPattern</code> and since <code>TokenPattern res</code> was already initialized to all zeros in the inlined <code>TokenPattern::doAnd</code>, it could remove the initialization of <code>this-&gt;toklist</code> since they are dead stores.</p>
+<p>Therefore, it's not as simple as matching a contiguous block of statements in <code>genPattern</code>.</p>
+<p>I have ideas as to how to get around this but the question remains if this is desirable to a reverse engineer.</p>
+<p>I definitely want a user to be able to manually perform the outlining but I was initially thinking that I wanted to automatically detect the inlined constructor and outline it. However, I'm leaning towards not doing this since it seems like it may make reverse engineering more difficult (althought maybe this is cope since it's more difficult than I originally thought).</p>
+<p>Either way, this is an interesting case where it's unclear whether or not the decompiler should try to make the output as close as possible to the original source code.</p>
+<h2 id="conclusion">Conclusion</h2>
+<p>The length of this post is more evidence to me that this DSL is just a first draft. While I find it fun to write these rules and watch the decompilation improve, even I got annoyed at how many rules I had to write to cover all of the edge cases.</p>
+<p>There's two things I want to implement that I think will make this better:</p>
+<ol>
+<li>Pattern match on the CST instead of the AST</li>
+</ol>
+<p>If you could match a rule using the generated syntax of a CST node with holes, this would make the <code>from</code> attribute much shorter and more intuitive. While I have a bare-bones implementation of this for macros, I haven't yet put in the work to put all of the constraints/variable binding into this form.</p>
+<ol start="2">
+<li>Do real type inference</li>
+</ol>
+<p>The transparent first class fields (where the first field of a class has the same address as the class itself) were tricky to deal with here. I'm not sure exactly how it would look but I think some sort of unification-based type inference would make this and other problems easier to deal with.</p>
+<p>Regardless of these current limitations, I'm again quite happy with how the final decompiled C++ looks and am excited to add more features/try it out on new languages.</p>
+</div>
+
+  <p class="meta">Posted on <span class="postdate">2024-03-21</span></p>
+</article>
+
+      </div>
+      <footer id="footer">
+        <p class="copyright">
+          
+            Powered by <a href="https://www.getzola.org/">Zola</a> and the
+            <a href="https://github.com/hulufei/solar-theme-zola">Solar</a>-theme.
+          
+        </p>
+      </footer>
+    </div>
+  </body>
+</html>
