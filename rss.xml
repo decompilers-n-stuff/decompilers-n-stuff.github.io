@@ -7,7 +7,15 @@
         <generator>Zola</generator>
         <language>en</language>
         <atom:link href="https://decompilers-n-stuff.github.io/rss.xml" rel="self" type="application/rss+xml"/>
-        <lastBuildDate>Thu, 21 Mar 2024 00:00:00 +0000</lastBuildDate>
+        <lastBuildDate>Tue, 02 Apr 2024 00:00:00 +0000</lastBuildDate>
+        <item>
+            <title>Decompiling Swift</title>
+            <pubDate>Tue, 02 Apr 2024 00:00:00 +0000</pubDate>
+            <link>https://decompilers-n-stuff.github.io/swift/</link>
+            <guid>https://decompilers-n-stuff.github.io/swift/</guid>
+            <description>&lt;p&gt;In this post, I&#x27;ll describe the new features I added to the language definition DSL I&#x27;ve been working on in order to support decompiling Swift (and hopefully other languages).&lt;&#x2F;p&gt;
+</description>
+        </item>
         <item>
             <title>Are we are C++ yet?</title>
             <pubDate>Thu, 21 Mar 2024 00:00:00 +0000</pubDate>

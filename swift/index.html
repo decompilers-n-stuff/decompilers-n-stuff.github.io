@@ -1,0 +1,1068 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta http-equiv="content-type" content="text/html; charset=utf-8">
+
+    <!-- Enable responsiveness on mobile devices-->
+    <!-- viewport-fit=cover is to support iPhone X rounded corners and notch in landscape-->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, viewport-fit=cover">
+
+    <title>Decompilers &#x27;n Stuff</title>
+
+    <!-- CSS -->
+    <link rel="stylesheet" href="https://decompilers-n-stuff.github.io/colors-dark.css">
+
+    
+
+    
+    
+  </head>
+  <body>
+    <header id="header">
+      <h1><a href="https:&#x2F;&#x2F;decompilers-n-stuff.github.io">Decompilers &#x27;n Stuff</a></h1>
+      <p>Experiments in decompilation</p>
+    </header>
+    <div id="page">
+      <div id="sidebar">
+        
+          
+          <nav>
+            <ul class="nav">
+              
+                
+                  <li>
+                    <a href="&#x2F;about"><span>About</span></a>
+                  </li>
+                
+                  <li>
+                    <a href="rss.xml"><span>RSS</span></a>
+                  </li>
+                
+              
+            </ul>
+          </nav>
+          
+        
+      </div>
+      <div id="content">
+        
+<article class="post">
+  <h1><a href="https:&#x2F;&#x2F;decompilers-n-stuff.github.io&#x2F;swift&#x2F;">Decompiling Swift</a></h1>
+
+  <div class="post-content"><p>In this post, I'll describe the new features I added to the language definition DSL I've been working on in order to support decompiling Swift (and hopefully other languages).</p>
+<span id="continue-reading"></span>
+<p>I'm quite excited about this capability as Swift is the first language I've decompiled that is not basically C.</p>
+<p>The changes I've made to the DSL reflect this as well.</p>
+<h2 id="problem-statement">Problem Statement</h2>
+<p>Here is the function we'll be decompiling today:</p>
+<pre data-lang="Swift" style="background-color:#042029;color:#839496;" class="language-Swift "><code class="language-Swift" data-lang="Swift"><span style="color:#738a05;">func </span><span>foobar(a: </span><span style="color:#859900;">Int</span><span>, b: </span><span style="color:#859900;">Int</span><span>) </span><span style="color:#859900;">-&gt; Int </span><span>{
+</span><span>    </span><span style="color:#738a05;">var</span><span> d </span><span style="color:#859900;">=</span><span> [</span><span style="color:#859900;">Int</span><span>:</span><span style="color:#859900;">Int</span><span>]()
+</span><span>    d[</span><span style="color:#d33682;">1</span><span>] </span><span style="color:#859900;">=</span><span> a
+</span><span>    d[</span><span style="color:#d33682;">2</span><span>] </span><span style="color:#859900;">=</span><span> b
+</span><span>
+</span><span>    </span><span style="color:#738a05;">var</span><span> s </span><span style="color:#859900;">= </span><span style="color:#d33682;">0
+</span><span>
+</span><span>    </span><span style="color:#859900;">for</span><span> (k, v) </span><span style="color:#859900;">in</span><span> d {
+</span><span>        s </span><span style="color:#859900;">+=</span><span> d[k] ?? v
+</span><span>    }
+</span><span>
+</span><span>    </span><span style="color:#859900;">return</span><span> s
+</span><span>}
+</span></code></pre>
+<p>Ignoring the silly oversight I made while writing this toy function (see if you can spot it!), I thought this function would be interesting since it uses dictionaries, iterators, and optionals.</p>
+<p>To entice you to read this article, here's the final output from my decompiler:</p>
+<pre data-lang="Swift" style="background-color:#042029;color:#839496;" class="language-Swift "><code class="language-Swift" data-lang="Swift"><span style="color:#738a05;">func </span><span>FUN_100003aa0(p1: </span><span style="color:#859900;">Int</span><span>, p2: </span><span style="color:#859900;">Int</span><span>) </span><span style="color:#859900;">-&gt; Int </span><span>{
+</span><span>    </span><span style="color:#738a05;">var</span><span> dict </span><span style="color:#859900;">=</span><span> [</span><span style="color:#859900;">Int</span><span>:</span><span style="color:#859900;">Int</span><span>]()
+</span><span>    dict[</span><span style="color:#d33682;">0x1</span><span>] </span><span style="color:#859900;">=</span><span> p1
+</span><span>    dict[</span><span style="color:#d33682;">0x2</span><span>] </span><span style="color:#859900;">=</span><span> p2
+</span><span>    </span><span style="color:#738a05;">var</span><span> v15 </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0
+</span><span>    </span><span style="color:#859900;">for</span><span> (key, value) </span><span style="color:#859900;">in</span><span> dict {
+</span><span>        v15 </span><span style="color:#859900;">+=</span><span> dict[key] ?? value
+</span><span>    }
+</span><span>    </span><span style="color:#859900;">return</span><span> v15
+</span><span>}
+</span></code></pre>
+<h2 id="starting-point">Starting Point</h2>
+<p>As per usual, here is Ghidra's attempt at decompiling this function:</p>
+<p><img src="/orig_swift_decomp.png" alt="orig_swift_decomp" /></p>
+<p>If you take a closer look at some of the calls, something seems off. For example, the return value of <code>Swift.Dictionary.init</code> is not passed to <code>Dictionary.subscript.setter</code> which doesn't make much sense.</p>
+<p>However, looking at the disassembly of the setter call:</p>
+<p><img src="/swift_thiscall_asm.png" alt="setter_asm" /></p>
+<p>and the Swift <a href="https://github.com/apple/swift/blob/main/docs/ABI/CallConvSummary.rst">documentation</a>:</p>
+<p><img src="/swift_abi.png" alt="abi" /></p>
+<p>clears things up.</p>
+<p><code>R13</code> is used as the <code>self</code> parameter to instance method calls.</p>
+<p>However, there are some other oddities. Namely functions that we would expect to return a value like <code>Swift.Dictionary.makeIterator</code> or <code>Swift.Dictionary.Iterator.next</code> don't return anything.</p>
+<p>Again looking at the disassembly:</p>
+<p><img src="/swift_inout_example.png" alt="inout_asm" /></p>
+<p>reveals that <code>RAX</code> is used to pass a pointer to a local variable. Likely this is how Swift code where a function is returning an object <em>value</em> (not a reference) is translated into assembly.</p>
+<p>Indeed looking at the Swift <a href="https://developer.apple.com/documentation/swift/iteratorprotocol">Iterator</a> documentation shows that this is the case for <code>makeIterator</code> and <code>next</code>:</p>
+<pre data-lang="Swift" style="background-color:#042029;color:#839496;" class="language-Swift "><code class="language-Swift" data-lang="Swift"><span style="color:#738a05;">var</span><span> animalIterator </span><span style="color:#859900;">=</span><span> animals</span><span style="color:#859900;">.</span><span>makeIterator()
+</span><span style="color:#859900;">while </span><span style="color:#738a05;">let</span><span> animal </span><span style="color:#859900;">=</span><span> animalIterator</span><span style="color:#859900;">.</span><span>next() {
+</span><span>    print(animal)
+</span><span>}
+</span></code></pre>
+<p>Fixing up these calling conventions in Ghidra gives us a clearer picture of what's going on:</p>
+<p><img src="/ghidra_cconv_fixup.png" alt="ghidra_cconv_fixup" /></p>
+<p>This looks better but ther's still local variables being used and never written to. This is always indicative of structures so let's create some.</p>
+<p>The first guess as to a structure is from the <code>Dictionary.subscript.getter</code> function. We know from the source code that this function returns an optional <code>Int</code>. And since we unwrap the value with <code>??</code>, it seems likely that the if/else after the <code>getter</code> call is checking whether <code>val_inout</code> is nil.</p>
+<p>Therefore, we can infer that optionals <code>Int</code>'s are represented in memory as:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>struct optional_int {
+</span><span>    uint64_t value;
+</span><span>    bool     null?;
+</span><span>}
+</span></code></pre>
+<p>Using this information, we can also realize that <code>Iterator.next</code> returns an optional <code>(Int, Int)</code> which would be represented as:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>struct optional_tuple2 {
+</span><span>    uint64_t key;
+</span><span>    uint64_t val;
+</span><span>    bool     null?;
+</span><span>}
+</span></code></pre>
+<p>Defining these structs in Ghidra gives up (I think) the best that we can do:</p>
+<p><img src="/ghidra_final_decomp.png" alt="ghidra_final_decomp" /></p>
+<h2 id="part-two">Part Two</h2>
+<p>You know the drill. Now I'll show how to gradually improve the output until we basically recover the original source.</p>
+<p>For reference, here is how my decompiler decompiles the function as <code>C</code> (with the corrected calling conventions):</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>uint64_t FUN_100003aa0(uint64_t p1, uint64_t p2) {
+</span><span>    uint64_t v1 = p2;
+</span><span>    uint64_t v2 = p1;
+</span><span>    memset(&amp;v3, 0x0, 0x8);
+</span><span>    memset(&amp;v4, 0x0, 0x8);
+</span><span>    memset(&amp;v5, 0x0, 0x8);
+</span><span>    memset(&amp;v15, 0x0, 0x8);
+</span><span>    memset(&amp;v31, 0x0, 0x28);
+</span><span>    memset(&amp;v23, 0x0, 0x8);
+</span><span>    memset(&amp;v24, 0x0, 0x8);
+</span><span>    uint64_t v3 = v2;
+</span><span>    uint64_t v4 = v1;
+</span><span>    uint64_t v5 = Swift.Dictionary.init(*(0x100004008), *(0x100004008), *(0x100004010));
+</span><span>    uint64_t v6 = v2;
+</span><span>    uint8_t v7 = 0x0;
+</span><span>    uint64_t v8 = 0x1;
+</span><span>    Dictionary.subscript.setter(&amp;v5, &amp;v6, &amp;v8, __swift_instantiateConcreteTypeFromMangledName(0x100008060));
+</span><span>    uint64_t v12 = v1;
+</span><span>    uint8_t v13 = 0x0;
+</span><span>    uint64_t v14 = 0x2;
+</span><span>    Dictionary.subscript.setter(&amp;v5, &amp;v12, &amp;v14, __swift_instantiateConcreteTypeFromMangledName(0x100008060));
+</span><span>    uint64_t v15 = 0x0;
+</span><span>    _swift_bridgeObjectRetain(v5);
+</span><span>    Swift.Dictionary.makeIterator(&amp;v32, v5, *(0x100004008), *(0x100004008), *(0x100004010));
+</span><span>    memcpy(&amp;v31, &amp;v32, 0x28);
+</span><span>    while (0x1) {
+</span><span>        Swift.Dictionary.Iterator.next(&amp;v33, &amp;v31, __swift_instantiateConcreteTypeFromMangledName(0x100008068));
+</span><span>        if (v35 != 0x0) {
+</span><span>            break;
+</span><span>        }
+</span><span>        uint64_t v20 = v33;
+</span><span>        uint64_t v21 = v34;
+</span><span>        uint64_t v23 = v20;
+</span><span>        uint64_t v24 = v21;
+</span><span>        uint64_t v25 = v20;
+</span><span>        Dictionary.subscript.getter(&amp;v36, &amp;v25, v5, *(0x100004008), *(0x100004008), *(0x100004010));
+</span><span>        uint64_t v28;
+</span><span>        if (v37 == 0x0) {
+</span><span>            v28 = v36;
+</span><span>        }
+</span><span>        else {
+</span><span>            v28 = v21;
+</span><span>        }
+</span><span>        uint64_t v29 = v15 + v28;
+</span><span>        if (v28 carry v15 != 0x0) {
+</span><span>            while (0x1) {
+</span><span>
+</span><span>            }
+</span><span>        }
+</span><span>        v15 = v29;
+</span><span>    }
+</span><span>    outlined_destroy_of_[Int_:_Int].Iterator(&amp;v31);
+</span><span>    outlined_destroy_of_[Int_:_Int](&amp;v5);
+</span><span>    return v15;
+</span><span>}
+</span></code></pre>
+<p>First, we can replace the rules for things like <code>C</code> assign or return statements with <code>Swift</code> ones that are basically the same but don't have a semicolon. We'll also use the correct <code>var</code> syntax for declarations and add type annotations for clarity:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>func FUN_100003aa0(p1: uint64_t, p2: uint64_t) -&gt; uint64_t {
+</span><span>    var v1: uint64_t = p2
+</span><span>    var v2: uint64_t = p1
+</span><span>    memset(&amp;v3, 0x0, 0x8)
+</span><span>    memset(&amp;v4, 0x0, 0x8)
+</span><span>    memset(&amp;v5, 0x0, 0x8)
+</span><span>    memset(&amp;v15, 0x0, 0x8)
+</span><span>    memset(&amp;v31, 0x0, 0x28)
+</span><span>    memset(&amp;v23, 0x0, 0x8)
+</span><span>    memset(&amp;v24, 0x0, 0x8)
+</span><span>    var v3: uint64_t = v2
+</span><span>    var v4: uint64_t = v1
+</span><span>    var v5: uint64_t = Swift.Dictionary.init(*(0x100004008), *(0x100004008), *(0x100004010))
+</span><span>    var v6: uint64_t = v2
+</span><span>    var v7: uint8_t = 0x0
+</span><span>    var v8: uint64_t = 0x1
+</span><span>    Dictionary.subscript.setter(&amp;v5, &amp;v6, &amp;v8, __swift_instantiateConcreteTypeFromMangledName(0x100008060))
+</span><span>    var v12: uint64_t = v1
+</span><span>    var v13: uint8_t = 0x0
+</span><span>    var v14: uint64_t = 0x2
+</span><span>    Dictionary.subscript.setter(&amp;v5, &amp;v12, &amp;v14, __swift_instantiateConcreteTypeFromMangledName(0x100008060))
+</span><span>    var v15: uint64_t = 0x0
+</span><span>    _swift_bridgeObjectRetain(v5)
+</span><span>    Swift.Dictionary.makeIterator(&amp;v32, v5, *(0x100004008), *(0x100004008), *(0x100004010))
+</span><span>    memcpy(&amp;v31, &amp;v32, 0x28)
+</span><span>    while (0x1) {
+</span><span>        Swift.Dictionary.Iterator.next(&amp;v33, &amp;v31, __swift_instantiateConcreteTypeFromMangledName(0x100008068))
+</span><span>        if (v35 != 0x0) {
+</span><span>            break
+</span><span>        }
+</span><span>        var v20: uint64_t = v33
+</span><span>        var v21: uint64_t = v34
+</span><span>        var v23: uint64_t = v20
+</span><span>        var v24: uint64_t = v21
+</span><span>        var v25: uint64_t = v20
+</span><span>        Dictionary.subscript.getter(&amp;v36, &amp;v25, v5, *(0x100004008), *(0x100004008), *(0x100004010))
+</span><span>        var v28: uint64_t
+</span><span>        if (v37 == 0x0) {
+</span><span>            v28 = v36
+</span><span>        }
+</span><span>        else {
+</span><span>            v28 = v21
+</span><span>        }
+</span><span>        var v29: uint64_t = v15 + v28
+</span><span>        if (v28 carry v15 != 0x0) {
+</span><span>            while (0x1) {
+</span><span>
+</span><span>            }
+</span><span>        }
+</span><span>        v15 = v29
+</span><span>    }
+</span><span>    outlined_destroy_of_[Int_:_Int].Iterator(&amp;v31)
+</span><span>    outlined_destroy_of_[Int_:_Int](&amp;v5)
+</span><span>    return v15
+</span><span>}
+</span></code></pre>
+<p>Looks basically the same but bear with me.</p>
+<p>The next logical step to me was to use known function calls to propagate types within the function.</p>
+<p>The first such function that came to mind was <code>Swift.Dictionary.init</code> since we know it will return a <code>Dictionary&lt;Int, Int&gt;</code>.</p>
+<p>For syntax, I created a rule:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>init_dict:
+</span><span>    from:
+</span><span>    ```
+</span><span>    AST_DECL_ASSIGN
+</span><span>    |
+</span><span>    +--- _
+</span><span>    +--- _        =&gt; $dict
+</span><span>    +--- AST_CALL =&gt; $init_expr
+</span><span>         +--- _   =&gt; $target:    $self == &quot;Swift.Dictionary.init&quot;
+</span><span>         +--- *
+</span><span>    ```
+</span><span>    dict: expr
+</span><span>    init_expr: expr
+</span><span>    repr: `var` $dict: ${typeof(dict)} = [Int:Int]()
+</span><span>    priority: 0
+</span><span>    post_actions:
+</span><span>        * rename($dict, &quot;dict&quot;)
+</span></code></pre>
+<p>which makes the code look a bit nicer:</p>
+<pre data-lang="Swift" style="background-color:#042029;color:#839496;" class="language-Swift "><code class="language-Swift" data-lang="Swift"><span style="color:#738a05;">func </span><span>FUN_100003aa0(p1: uint64_t, p2: uint64_t) </span><span style="color:#859900;">-&gt;</span><span> uint64_t {
+</span><span>    </span><span style="color:#859900;">...
+</span><span>    </span><span style="color:#738a05;">var</span><span> dict: uint64_t </span><span style="color:#859900;">=</span><span> [</span><span style="color:#859900;">Int</span><span>:</span><span style="color:#859900;">Int</span><span>]()
+</span><span>    </span><span style="color:#738a05;">var</span><span> v6: uint64_t </span><span style="color:#859900;">=</span><span> v2
+</span><span>    </span><span style="color:#738a05;">var</span><span> v7: uint8_t </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0
+</span><span>    </span><span style="color:#738a05;">var</span><span> v8: uint64_t </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x1
+</span><span>    </span><span style="color:#859900;">Dictionary.subscript.</span><span>setter(</span><span style="color:#859900;">&amp;</span><span>dict, </span><span style="color:#859900;">&amp;</span><span>v6, </span><span style="color:#859900;">&amp;</span><span>v8, </span><span style="color:#859900;">...</span><span>)
+</span><span>    </span><span style="color:#738a05;">var</span><span> v12: uint64_t </span><span style="color:#859900;">=</span><span> v1
+</span><span>    </span><span style="color:#738a05;">var</span><span> v13: uint8_t </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0
+</span><span>    </span><span style="color:#738a05;">var</span><span> v14: uint64_t </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x2
+</span><span>    </span><span style="color:#859900;">Dictionary.subscript.</span><span>setter(</span><span style="color:#859900;">&amp;</span><span>dict, </span><span style="color:#859900;">&amp;</span><span>v12, </span><span style="color:#859900;">&amp;</span><span>v14, </span><span style="color:#859900;">...</span><span>)
+</span><span>    </span><span style="color:#859900;">...
+</span><span>}
+</span></code></pre>
+<p>Obviously in the future, I'd like to actually parse the type names passed to the <code>init</code> function but <code>lief</code> doesn't find those symbols in the GOT and I'd also have to write a Swift name demangler which I don't want to do at the moment.</p>
+<p>While the code above looks syntactically better, <code>dict</code> still has type <code>uint64_t</code> which is incorrect.</p>
+<p>To make it have the correct type, I added the capability to define types like so:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>@type SwiftClass
+</span><span>    attrs:
+</span><span>        type_repr: SwiftClass
+</span><span>
+</span><span>@type Int: SwiftClass = uint64_t
+</span><span>
+</span><span>@type Dictionary&lt;K, V&gt;: SwiftClass
+</span><span>    attrs:
+</span><span>        type_repr: [$K:$V]
+</span></code></pre>
+<p>This should look familiar to any OO programmer. It declares a base type <code>SwiftClass</code> for all Swift class types to inherit from. Then it creates an <code>Int</code> type which is a <code>SwiftClass</code> but the <code>=</code> means that it's just a type alias for <code>uint64_t</code>.</p>
+<p>Finally it creates a generic <code>Dictionary</code> type which takes two type parameters <code>K</code> and <code>V</code> and inherits from the <code>SwiftClass</code> type.</p>
+<p>This inheritance structure is useful because in some rules we'll later write, we don't care what the specific type of an expression is, as long as it is a <code>SwiftClass</code>.</p>
+<p>The <code>Dictionary</code> type uses template-style generics so a <code>Dictionary&lt;Int, Int&gt;</code> will have its type represented as <code>[Int:Int]</code>.</p>
+<p>Using this <code>Dictionary</code> type, we can create namespaced rules (sort of like methods) for getting and setting by subscript:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>@type Dictionary&lt;K, V&gt;: SwiftClass
+</span><span>    attrs:
+</span><span>        type_repr: [$K:$V]
+</span><span>
+</span><span>    ops:
+</span><span>        get:
+</span><span>            from:
+</span><span>            ```
+</span><span>            AST_VOID_STMT
+</span><span>            |
+</span><span>            +--- AST_CALL
+</span><span>                 +--- _       =&gt; $target: $self == &quot;Dictionary.subscript.getter&quot;
+</span><span>                 +--- AST_REF
+</span><span>                      +--- _  =&gt; $val
+</span><span>                 +--- AST_REF
+</span><span>                      +--- _  =&gt; $key
+</span><span>                 +--- _       =&gt; $dict:   $self isa &quot;Self&quot;
+</span><span>                 +--- *
+</span><span>            ```
+</span><span>            dict: expr
+</span><span>            key: expr
+</span><span>            val: expr
+</span><span>            repr: `let` $val = $dict[$key]
+</span><span>            propagatable: true
+</span><span>            priority: 0
+</span><span>
+</span><span>        set:
+</span><span>            from:
+</span><span>            ```
+</span><span>            AST_CALL
+</span><span>            +--- _       =&gt; $target: $self == &quot;Dictionary.subscript.setter&quot;
+</span><span>            +--- AST_REF
+</span><span>                 +--- _  =&gt; $dict:   $self isa &quot;Self&quot;
+</span><span>            +--- AST_REF
+</span><span>                 +--- _  =&gt; $val
+</span><span>            +--- AST_REF
+</span><span>                 +--- _  =&gt; $key
+</span><span>            +--- *
+</span><span>            ```
+</span><span>            dict: expr
+</span><span>            key: expr
+</span><span>            val: expr
+</span><span>            repr: $dict[$key] = $val
+</span><span>            priority: 0
+</span></code></pre>
+<p>When <code>Dictionary&lt;K, V&gt;</code> is mono-morphized to say <code>Dictionary&lt;Int, Int&gt;</code>, top-level rules <code>Dictionary&lt;Int, Int&gt;_get</code> and <code>_set</code> will be created.</p>
+<p>Using these rules gives us nice syntax for the dict getters and setters:</p>
+<pre data-lang="Swift" style="background-color:#042029;color:#839496;" class="language-Swift "><code class="language-Swift" data-lang="Swift"><span style="color:#738a05;">func </span><span>FUN_100003aa0(p1: uint64_t, p2: uint64_t) </span><span style="color:#859900;">-&gt;</span><span> uint64_t {
+</span><span>    </span><span style="color:#859900;">...
+</span><span>    </span><span style="color:#738a05;">var</span><span> dict: [</span><span style="color:#859900;">Int</span><span>:</span><span style="color:#859900;">Int</span><span>] </span><span style="color:#859900;">=</span><span> [</span><span style="color:#859900;">Int</span><span>:</span><span style="color:#859900;">Int</span><span>]()
+</span><span>    </span><span style="color:#738a05;">var</span><span> v6: uint64_t </span><span style="color:#859900;">=</span><span> v2
+</span><span>    </span><span style="color:#738a05;">var</span><span> v7: uint8_t </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0
+</span><span>    </span><span style="color:#738a05;">var</span><span> v8: uint64_t </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x1
+</span><span>    dict[v8] </span><span style="color:#859900;">=</span><span> v6
+</span><span>    </span><span style="color:#738a05;">var</span><span> v12: uint64_t </span><span style="color:#859900;">=</span><span> v1
+</span><span>    </span><span style="color:#738a05;">var</span><span> v13: uint8_t </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0
+</span><span>    </span><span style="color:#738a05;">var</span><span> v14: uint64_t </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x2
+</span><span>    dict[v14] </span><span style="color:#859900;">=</span><span> v12
+</span><span>    </span><span style="color:#859900;">...
+</span><span>    </span><span style="color:#859900;">while</span><span> (</span><span style="color:#d33682;">0x1</span><span>) {
+</span><span>        </span><span style="color:#859900;">...
+</span><span>        </span><span style="color:#738a05;">let</span><span> v36 </span><span style="color:#859900;">=</span><span> dict[v25]
+</span><span>        </span><span style="color:#859900;">...
+</span><span>    }
+</span><span>    </span><span style="color:#859900;">...
+</span><span>}
+</span></code></pre>
+<p>However, we know from the getter/setter type signatures that <code>v8</code> is an <code>Int</code> and <code>v6</code> is an optional <code>Int</code>, among other variables.</p>
+<p>To be able to capture this information, we can first create some new types:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>@type Bool: SwiftClass = uint8_t
+</span><span>
+</span><span>@type Optional&lt;T&gt;: SwiftClass
+</span><span>    layout:
+</span><span>        value: $T
+</span><span>        is_null: Bool
+</span><span>
+</span><span>    attrs:
+</span><span>        type_repr: ${self[value]}?
+</span></code></pre>
+<p>Where the <code>layout</code> section of the <code>Optional</code> type specifies the memory layout of the type (basically creates a struct).</p>
+<p>and have the <code>Dictionary</code> <code>get/set</code> ops retype their parameters accordingly:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>@type Dictionary&lt;K, V&gt;: SwiftClass
+</span><span>    ...
+</span><span>
+</span><span>    ops:
+</span><span>        get:
+</span><span>            ...
+</span><span>            post_actions:
+</span><span>                * retype($key, &quot;$K&quot;)
+</span><span>                * retype($val, &quot;Optional&lt;$V&gt;&quot;)
+</span><span>
+</span><span>        set:
+</span><span>            ...
+</span><span>            post_actions:
+</span><span>                * retype($key, &quot;$K&quot;)
+</span><span>                * retype($val, &quot;Optional&lt;$V&gt;&quot;)
+</span></code></pre>
+<p>The decompiler is now able to propagate these types and produce a nicer result:</p>
+<pre data-lang="Swift" style="background-color:#042029;color:#839496;" class="language-Swift "><code class="language-Swift" data-lang="Swift"><span style="color:#738a05;">func </span><span>FUN_100003aa0(p1: uint64_t, p2: uint64_t) </span><span style="color:#859900;">-&gt; Int </span><span>{
+</span><span>    </span><span style="color:#738a05;">var</span><span> v1: </span><span style="color:#859900;">Int =</span><span> (</span><span style="color:#859900;">Int</span><span>)p2
+</span><span>    </span><span style="color:#738a05;">var</span><span> v2: </span><span style="color:#859900;">Int =</span><span> (</span><span style="color:#859900;">Int</span><span>)p1
+</span><span>    </span><span style="color:#859900;">...
+</span><span>    </span><span style="color:#738a05;">var</span><span> v3: </span><span style="color:#859900;">Int =</span><span> v2
+</span><span>    </span><span style="color:#738a05;">var</span><span> v4: </span><span style="color:#859900;">Int =</span><span> v1
+</span><span>    </span><span style="color:#738a05;">var</span><span> dict: [</span><span style="color:#859900;">Int</span><span>:</span><span style="color:#859900;">Int</span><span>] </span><span style="color:#859900;">=</span><span> [</span><span style="color:#859900;">Int</span><span>:</span><span style="color:#859900;">Int</span><span>]()
+</span><span>    </span><span style="color:#738a05;">var</span><span> v6: </span><span style="color:#859900;">Int</span><span>? </span><span style="color:#859900;">=</span><span> {
+</span><span>        value </span><span style="color:#859900;">=</span><span> v2
+</span><span>        is_null </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0
+</span><span>    }
+</span><span>    </span><span style="color:#738a05;">var</span><span> v8: </span><span style="color:#859900;">Int = </span><span style="color:#d33682;">0x1
+</span><span>    dict[v8] </span><span style="color:#859900;">=</span><span> v6
+</span><span>    </span><span style="color:#738a05;">var</span><span> v12: </span><span style="color:#859900;">Int</span><span>? </span><span style="color:#859900;">=</span><span> {
+</span><span>        value </span><span style="color:#859900;">=</span><span> v1
+</span><span>        is_null </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0
+</span><span>    }
+</span><span>    </span><span style="color:#738a05;">var</span><span> v14: </span><span style="color:#859900;">Int = </span><span style="color:#d33682;">0x2
+</span><span>    dict[v14] </span><span style="color:#859900;">=</span><span> v12
+</span><span>    </span><span style="color:#738a05;">var</span><span> v15: </span><span style="color:#859900;">Int = </span><span style="color:#d33682;">0x0
+</span><span>    </span><span style="color:#859900;">...
+</span><span>    </span><span style="color:#859900;">while</span><span> (</span><span style="color:#d33682;">0x1</span><span>) {
+</span><span>        Swift</span><span style="color:#859900;">.Dictionary.</span><span>Iterator</span><span style="color:#859900;">.</span><span>next(</span><span style="color:#859900;">&amp;</span><span>v33, </span><span style="color:#859900;">&amp;</span><span>v31, </span><span style="color:#859900;">*</span><span>)
+</span><span>        </span><span style="color:#859900;">if</span><span> (v35 </span><span style="color:#859900;">!= </span><span style="color:#d33682;">0x0</span><span>) {
+</span><span>            </span><span style="color:#859900;">break
+</span><span>        }
+</span><span>        </span><span style="color:#738a05;">var</span><span> v21: </span><span style="color:#859900;">Int =</span><span> (</span><span style="color:#859900;">Int</span><span>)v33
+</span><span>        </span><span style="color:#738a05;">var</span><span> v22: </span><span style="color:#859900;">Int =</span><span> (</span><span style="color:#859900;">Int</span><span>)v34
+</span><span>        </span><span style="color:#738a05;">var</span><span> v24: </span><span style="color:#859900;">Int =</span><span> v21
+</span><span>        </span><span style="color:#738a05;">var</span><span> v25: </span><span style="color:#859900;">Int =</span><span> v22
+</span><span>        </span><span style="color:#738a05;">var</span><span> v26: </span><span style="color:#859900;">Int =</span><span> v21
+</span><span>        </span><span style="color:#738a05;">let</span><span> v36 </span><span style="color:#859900;">=</span><span> dict[v26]
+</span><span>        </span><span style="color:#738a05;">var</span><span> v29: </span><span style="color:#859900;">Int
+</span><span>        </span><span style="color:#859900;">if</span><span> (v36</span><span style="color:#859900;">.</span><span>is_null </span><span style="color:#859900;">== </span><span style="color:#d33682;">0x0</span><span>) {
+</span><span>            v29 </span><span style="color:#859900;">=</span><span> v36</span><span style="color:#859900;">.</span><span>value
+</span><span>        }
+</span><span>        </span><span style="color:#859900;">else</span><span> {
+</span><span>            v29 </span><span style="color:#859900;">=</span><span> v22
+</span><span>        }
+</span><span>        </span><span style="color:#738a05;">var</span><span> v30: </span><span style="color:#859900;">Int =</span><span> v15 </span><span style="color:#859900;">+</span><span> v29
+</span><span>        </span><span style="color:#859900;">if</span><span> (v29 carry v15 </span><span style="color:#859900;">!= </span><span style="color:#d33682;">0x0</span><span>) {
+</span><span>            </span><span style="color:#859900;">while</span><span> (</span><span style="color:#d33682;">0x1</span><span>) {
+</span><span>
+</span><span>            }
+</span><span>        }
+</span><span>        v15 </span><span style="color:#859900;">=</span><span> v30
+</span><span>    }
+</span><span>    </span><span style="color:#859900;">...
+</span><span>}
+</span></code></pre>
+<p>We can now create a rule in the <code>Optional&lt;T&gt;</code> type which cleans up those struct literals since in Swift code, you usually treat optionals as a transparent type:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>@type Optional&lt;T&gt;: SwiftClass
+</span><span>    ...
+</span><span>
+</span><span>    ops:
+</span><span>        nonnil_literal:
+</span><span>            from:
+</span><span>            ```
+</span><span>            AST_STRUCT_LITERAL
+</span><span>            +--- _               =&gt; $struct_type: $self == &quot;$T?&quot;
+</span><span>            +--- AST_ASSIGN
+</span><span>                 +--- _
+</span><span>                 +--- _
+</span><span>                 +--- _          =&gt; $val
+</span><span>            +--- AST_ASSIGN
+</span><span>                 +--- _
+</span><span>                 +--- _
+</span><span>                 +--- AST_NUMBER =&gt; $is_null: $self == &quot;0x0&quot;
+</span><span>            ```
+</span><span>            repr: $val
+</span><span>            val: expr
+</span><span>            priority: 0
+</span><span>            post_actions:
+</span><span>                * retype($val, &quot;$T&quot;)
+</span></code></pre>
+<p>which indeed does what we want:</p>
+<pre data-lang="Swift" style="background-color:#042029;color:#839496;" class="language-Swift "><code class="language-Swift" data-lang="Swift"><span style="color:#738a05;">func </span><span>FUN_100003aa0(p1: </span><span style="color:#859900;">Int</span><span>, p2: </span><span style="color:#859900;">Int</span><span>) </span><span style="color:#859900;">-&gt; Int </span><span>{
+</span><span>    </span><span style="color:#859900;">...
+</span><span>    </span><span style="color:#738a05;">var</span><span> dict: [</span><span style="color:#859900;">Int</span><span>:</span><span style="color:#859900;">Int</span><span>] </span><span style="color:#859900;">=</span><span> [</span><span style="color:#859900;">Int</span><span>:</span><span style="color:#859900;">Int</span><span>]()
+</span><span>    </span><span style="color:#738a05;">var</span><span> v6: </span><span style="color:#859900;">Int</span><span>? </span><span style="color:#859900;">=</span><span> v2
+</span><span>    </span><span style="color:#738a05;">var</span><span> v8: </span><span style="color:#859900;">Int = </span><span style="color:#d33682;">0x1
+</span><span>    dict[v8] </span><span style="color:#859900;">=</span><span> v6
+</span><span>    </span><span style="color:#738a05;">var</span><span> v12: </span><span style="color:#859900;">Int</span><span>? </span><span style="color:#859900;">=</span><span> v1
+</span><span>    </span><span style="color:#738a05;">var</span><span> v14: </span><span style="color:#859900;">Int = </span><span style="color:#d33682;">0x2
+</span><span>    dict[v14] </span><span style="color:#859900;">=</span><span> v12
+</span><span>    </span><span style="color:#859900;">...
+</span><span>}
+</span></code></pre>
+<p>Now we can turn out attention to the loop and first create a rule for <code>makeIterator</code>:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>@type Dictionary&lt;K, V&gt;: SwiftClass
+</span><span>    ...
+</span><span>
+</span><span>    ops:
+</span><span>        ...
+</span><span>
+</span><span>        make_iter:
+</span><span>            from:
+</span><span>            ```
+</span><span>            AST_VOID_STMT
+</span><span>            |
+</span><span>            +--- AST_CALL
+</span><span>                 +--- _       =&gt; $target: $self == &quot;Swift.Dictionary.makeIterator&quot;
+</span><span>                 +--- AST_REF
+</span><span>                      +--- _  =&gt; $iter
+</span><span>                 +--- _       =&gt; $dict: $self isa &quot;Self&quot;
+</span><span>                 +--- *
+</span><span>            ```
+</span><span>            target:
+</span><span>                type: call_target
+</span><span>                repr: makeIterator
+</span><span>            iter: expr
+</span><span>            dict: expr
+</span><span>            repr: `let` $iter = $dict.$target()
+</span><span>            priority: 0
+</span><span>            post_actions:
+</span><span>                * retype($iter, &quot;Iterator&lt;Tuple2&lt;$K, $V&gt;&gt;&quot;)
+</span></code></pre>
+<p>And create types for <code>Tuple2</code> and <code>Iterator</code>:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>@type Tuple2&lt;T1, T2&gt;: SwiftClass
+</span><span>    layout:
+</span><span>        0: $T1
+</span><span>        1: $T2
+</span><span>
+</span><span>    attrs:
+</span><span>        type_repr: ($T1, $T2)
+</span><span>        repr: ($0, $1)
+</span><span>
+</span><span>
+</span><span>@type Iterator&lt;T&gt;: SwiftClass
+</span><span>    attrs:
+</span><span>        type_repr: Iterator&lt;$T&gt;
+</span></code></pre>
+<p>which improves just that call:</p>
+<pre data-lang="Swift" style="background-color:#042029;color:#839496;" class="language-Swift "><code class="language-Swift" data-lang="Swift"><span style="color:#738a05;">func </span><span>FUN_100003aa0(p1: </span><span style="color:#859900;">Int</span><span>, p2: </span><span style="color:#859900;">Int</span><span>) </span><span style="color:#859900;">-&gt; Int </span><span>{
+</span><span>    </span><span style="color:#859900;">...
+</span><span>    </span><span style="color:#738a05;">let</span><span> v32 </span><span style="color:#859900;">=</span><span> dict</span><span style="color:#859900;">.</span><span>makeIterator()
+</span><span>    memcpy(</span><span style="color:#859900;">&amp;</span><span>v31, </span><span style="color:#859900;">&amp;</span><span>v32, </span><span style="color:#d33682;">0x28</span><span>)
+</span><span>    </span><span style="color:#859900;">while</span><span> (</span><span style="color:#d33682;">0x1</span><span>) {
+</span><span>        Swift</span><span style="color:#859900;">.Dictionary.</span><span>Iterator</span><span style="color:#859900;">.</span><span>next(</span><span style="color:#859900;">&amp;</span><span>v33, </span><span style="color:#859900;">&amp;</span><span>v31, </span><span style="color:#859900;">*</span><span>)
+</span><span>        </span><span style="color:#859900;">...
+</span><span>    }
+</span><span>    </span><span style="color:#859900;">...
+</span><span>}
+</span></code></pre>
+<p>However, we can't yet create a rule for the call to <code>next</code> since <code>v32</code>, which was passed in as a parameter to <code>makeIterator</code>, is copied into <code>v31</code> which is then passed to <code>next</code>.</p>
+<p>I thought about create a rule for if an <code>inout</code> parameter is passed as a &quot;return value&quot; to a function and then <code>memcpy</code>-ed to condense that into one statement but I settled on for now creating the following rule:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>copy_swift_var:
+</span><span>    from:
+</span><span>    ```
+</span><span>    AST_VOID_STMT
+</span><span>    +--- AST_CALL
+</span><span>         +--- _       =&gt; $target: $self == &quot;memcpy&quot;
+</span><span>         +--- AST_REF
+</span><span>              +--- _  =&gt; $dst
+</span><span>         +--- AST_REF
+</span><span>              +--- _  =&gt; $src:    $self isa SwiftClass
+</span><span>         +--- _
+</span><span>    ```
+</span><span>    dst: expr
+</span><span>    src: expr
+</span><span>    repr: `var` $dst: ${typeof(dst)} = $src
+</span><span>    propagatable: true
+</span><span>    priority: 0
+</span><span>    post_actions:
+</span><span>        * retype($dst, typeof($src))
+</span></code></pre>
+<p>So that now <code>v31</code> has the correct <code>Iterator</code> type:</p>
+<pre data-lang="Swift" style="background-color:#042029;color:#839496;" class="language-Swift "><code class="language-Swift" data-lang="Swift"><span style="color:#738a05;">func </span><span>FUN_100003aa0(p1: </span><span style="color:#859900;">Int</span><span>, p2: </span><span style="color:#859900;">Int</span><span>) </span><span style="color:#859900;">-&gt; Int </span><span>{
+</span><span>    </span><span style="color:#859900;">...
+</span><span>    </span><span style="color:#738a05;">let</span><span> v32 </span><span style="color:#859900;">=</span><span> dict</span><span style="color:#859900;">.</span><span>makeIterator()
+</span><span>    </span><span style="color:#738a05;">var</span><span> v31: Iterator</span><span style="color:#859900;">&lt;</span><span>(</span><span style="color:#859900;">Int</span><span>, </span><span style="color:#859900;">Int</span><span>)</span><span style="color:#859900;">&gt; =</span><span> v32
+</span><span>    </span><span style="color:#859900;">...
+</span><span>}
+</span></code></pre>
+<p>Now we can create the <code>next</code> rule for <code>Iterator</code> which re-types the output as its parameterized type:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>@type Iterator&lt;T&gt;: SwiftClass
+</span><span>    ...
+</span><span>
+</span><span>    ops:
+</span><span>        next:
+</span><span>            from:
+</span><span>            ```
+</span><span>            AST_CALL
+</span><span>            +--- _       =&gt; $target: $self == &quot;Swift.Dictionary.Iterator.next&quot;
+</span><span>            +--- AST_REF
+</span><span>                 +--- _  =&gt; $elem
+</span><span>            +--- AST_REF
+</span><span>                 +--- _  =&gt; $iter:   $self isa &quot;Iterator&lt;$T&gt;&quot;
+</span><span>            +--- *
+</span><span>            ```
+</span><span>            target:
+</span><span>                type: call_target
+</span><span>                repr: next
+</span><span>            iter: expr
+</span><span>            elem: expr
+</span><span>            repr: `let` $elem = $iter.$target()
+</span><span>            priority: 0
+</span><span>            post_actions:
+</span><span>                * retype($elem, &quot;Optional&lt;$T&gt;&quot;)
+</span></code></pre>
+<p>and makes the types inside the loop nicer:</p>
+<pre data-lang="Swift" style="background-color:#042029;color:#839496;" class="language-Swift "><code class="language-Swift" data-lang="Swift"><span style="color:#738a05;">func </span><span>FUN_100003aa0(p1: </span><span style="color:#859900;">Int</span><span>, p2: </span><span style="color:#859900;">Int</span><span>) </span><span style="color:#859900;">-&gt; Int </span><span>{
+</span><span>    </span><span style="color:#859900;">...
+</span><span>    </span><span style="color:#738a05;">let</span><span> v32 </span><span style="color:#859900;">=</span><span> dict</span><span style="color:#859900;">.</span><span>makeIterator()
+</span><span>    </span><span style="color:#738a05;">var</span><span> v31: Iterator</span><span style="color:#859900;">&lt;</span><span>Tuple2</span><span style="color:#859900;">&lt;Int</span><span>, </span><span style="color:#859900;">Int&gt;&gt; =</span><span> v32
+</span><span>    </span><span style="color:#859900;">while</span><span> (</span><span style="color:#d33682;">0x1</span><span>) {
+</span><span>        </span><span style="color:#738a05;">let</span><span> v33 </span><span style="color:#859900;">=</span><span> v31</span><span style="color:#859900;">.</span><span>next()
+</span><span>        </span><span style="color:#859900;">if</span><span> (v33</span><span style="color:#859900;">.</span><span>is_null </span><span style="color:#859900;">!= </span><span style="color:#d33682;">0x0</span><span>) {
+</span><span>            </span><span style="color:#859900;">break
+</span><span>        }
+</span><span>        </span><span style="color:#738a05;">var</span><span> v20: </span><span style="color:#859900;">Int =</span><span> v33</span><span style="color:#859900;">.</span><span>value</span><span style="color:#859900;">.</span><span style="color:#d33682;">0
+</span><span>        </span><span style="color:#738a05;">var</span><span> v21: </span><span style="color:#859900;">Int =</span><span> v33</span><span style="color:#859900;">.</span><span>value</span><span style="color:#859900;">.</span><span style="color:#d33682;">1
+</span><span>        </span><span style="color:#738a05;">var</span><span> v23: </span><span style="color:#859900;">Int =</span><span> v20
+</span><span>        </span><span style="color:#738a05;">var</span><span> v24: </span><span style="color:#859900;">Int =</span><span> v21
+</span><span>        </span><span style="color:#738a05;">var</span><span> v25: </span><span style="color:#859900;">Int =</span><span> v20
+</span><span>        </span><span style="color:#738a05;">let</span><span> v36 </span><span style="color:#859900;">=</span><span> dict[v25]
+</span><span>        </span><span style="color:#738a05;">var</span><span> v28: </span><span style="color:#859900;">Int
+</span><span>        </span><span style="color:#859900;">if</span><span> (v36</span><span style="color:#859900;">.</span><span>is_null </span><span style="color:#859900;">== </span><span style="color:#d33682;">0x0</span><span>) {
+</span><span>            v28 </span><span style="color:#859900;">=</span><span> v36</span><span style="color:#859900;">.</span><span>value
+</span><span>        }
+</span><span>        </span><span style="color:#859900;">else</span><span> {
+</span><span>            v28 </span><span style="color:#859900;">=</span><span> v21
+</span><span>        }
+</span><span>        </span><span style="color:#859900;">...
+</span><span>    }
+</span><span>    </span><span style="color:#859900;">...
+</span><span>}
+</span></code></pre>
+<p>There are a few places to go from here but they all involve the <code>Optional</code> type.</p>
+<p>First, we can recognize that:</p>
+<pre data-lang="Swift" style="background-color:#042029;color:#839496;" class="language-Swift "><code class="language-Swift" data-lang="Swift"><span style="color:#859900;">if</span><span> (v33</span><span style="color:#859900;">.</span><span>is_null </span><span style="color:#859900;">!= </span><span style="color:#d33682;">0x0</span><span>) {
+</span><span>    </span><span style="color:#859900;">break</span><span>;
+</span><span>}
+</span></code></pre>
+<p>is really checking</p>
+<pre data-lang="Swift" style="background-color:#042029;color:#839496;" class="language-Swift "><code class="language-Swift" data-lang="Swift"><span style="color:#859900;">if</span><span> (v33 </span><span style="color:#859900;">== </span><span>nil) {
+</span><span>    </span><span style="color:#859900;">break</span><span>;
+</span><span>}
+</span></code></pre>
+<p>Therefore, we can create rules for nil-checking:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>@type Optional&lt;T&gt;: SwiftClass
+</span><span>    ...
+</span><span>
+</span><span>    ops:
+</span><span>        ...
+</span><span>
+</span><span>        nonnil_check:
+</span><span>            from:
+</span><span>            ```
+</span><span>            AST_BINARY            =&gt; $neq_expr: ${self[op]} == &quot;==&quot;
+</span><span>            +--- AST_STRUCT_FIELD
+</span><span>                 +--- _           =&gt; $optional: $self isa &quot;Self&quot;
+</span><span>                 +--- _           =&gt; $field:    $self == &quot;is_null&quot;
+</span><span>            +--- AST_NUMBER       =&gt; $barbaz:   $self == &quot;0x0&quot;
+</span><span>            ```
+</span><span>            repr: $optional != `nil`:purple
+</span><span>            optional: expr
+</span><span>            priority: 0
+</span><span>
+</span><span>        nil_check:
+</span><span>            from:
+</span><span>            ```
+</span><span>            AST_BINARY            =&gt; $neq_expr: ${self[op]} == &quot;!=&quot;
+</span><span>            +--- AST_STRUCT_FIELD
+</span><span>                 +--- _           =&gt; $optional: $self isa &quot;Self&quot;
+</span><span>                 +--- _           =&gt; $field:    $self == &quot;is_null&quot;
+</span><span>            +--- AST_NUMBER       =&gt; $barbaz:   $self == &quot;0x0&quot;
+</span><span>            ```
+</span><span>            repr: $optional == `nil`:purple
+</span><span>            optional: expr
+</span><span>            priority: 0
+</span></code></pre>
+<p>which makes the loop now look like:</p>
+<pre data-lang="Swift" style="background-color:#042029;color:#839496;" class="language-Swift "><code class="language-Swift" data-lang="Swift"><span style="color:#738a05;">func </span><span>FUN_100003aa0(p1: </span><span style="color:#859900;">Int</span><span>, p2: </span><span style="color:#859900;">Int</span><span>) </span><span style="color:#859900;">-&gt; Int </span><span>{
+</span><span>    </span><span style="color:#859900;">...
+</span><span>    </span><span style="color:#859900;">while</span><span> (</span><span style="color:#d33682;">0x1</span><span>) {
+</span><span>        </span><span style="color:#738a05;">let</span><span> v33 </span><span style="color:#859900;">=</span><span> v31</span><span style="color:#859900;">.</span><span>next()
+</span><span>        </span><span style="color:#859900;">if</span><span> (v33 </span><span style="color:#859900;">== </span><span>nil) {
+</span><span>            </span><span style="color:#859900;">break
+</span><span>        }
+</span><span>        </span><span style="color:#859900;">...
+</span><span>        </span><span style="color:#738a05;">let</span><span> v36 </span><span style="color:#859900;">=</span><span> dict[v25]
+</span><span>        </span><span style="color:#738a05;">var</span><span> v28: </span><span style="color:#859900;">Int
+</span><span>        </span><span style="color:#859900;">if</span><span> (v36 </span><span style="color:#859900;">!= </span><span>nil) {
+</span><span>            v28 </span><span style="color:#859900;">=</span><span> v36</span><span style="color:#859900;">.</span><span>value
+</span><span>        }
+</span><span>        </span><span style="color:#859900;">else</span><span> {
+</span><span>            v28 </span><span style="color:#859900;">=</span><span> v21
+</span><span>        }
+</span><span>        </span><span style="color:#859900;">...
+</span><span>    }
+</span><span>    </span><span style="color:#859900;">...
+</span><span>}
+</span></code></pre>
+<p>Next we can recognize that the statements</p>
+<pre data-lang="Swift" style="background-color:#042029;color:#839496;" class="language-Swift "><code class="language-Swift" data-lang="Swift"><span style="color:#738a05;">var</span><span> v20: </span><span style="color:#859900;">Int =</span><span> v33</span><span style="color:#859900;">.</span><span>value</span><span style="color:#859900;">.</span><span style="color:#d33682;">0
+</span><span style="color:#738a05;">var</span><span> v21: </span><span style="color:#859900;">Int =</span><span> v33</span><span style="color:#859900;">.</span><span>value</span><span style="color:#859900;">.</span><span style="color:#d33682;">1
+</span></code></pre>
+<p>and</p>
+<pre data-lang="Swift" style="background-color:#042029;color:#839496;" class="language-Swift "><code class="language-Swift" data-lang="Swift"><span>    v28 </span><span style="color:#859900;">=</span><span> v36</span><span style="color:#859900;">.</span><span>value
+</span></code></pre>
+<p>are really just unwrapping and copying the optional value and should therefore look like:</p>
+<pre data-lang="Swift" style="background-color:#042029;color:#839496;" class="language-Swift "><code class="language-Swift" data-lang="Swift"><span style="color:#738a05;">var</span><span> (v20, v21): (</span><span style="color:#859900;">Int</span><span>, </span><span style="color:#859900;">Int</span><span>) </span><span style="color:#859900;">=</span><span> v33</span><span style="color:#859900;">!
+</span></code></pre>
+<p>and</p>
+<pre data-lang="Swift" style="background-color:#042029;color:#839496;" class="language-Swift "><code class="language-Swift" data-lang="Swift"><span>    v28 </span><span style="color:#859900;">=</span><span> v36</span><span style="color:#859900;">!
+</span></code></pre>
+<p>Creating new rules for these two scenarios:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>@type Optional&lt;T&gt;: SwiftClass
+</span><span>    ...
+</span><span>
+</span><span>    ops:
+</span><span>        ...
+</span><span>
+</span><span>        copy_and_unwrap:
+</span><span>            from:
+</span><span>            ```
+</span><span>            AST_ASSIGN
+</span><span>            +--- _                =&gt; $dt:       $self == &quot;$T&quot;
+</span><span>            +--- _                =&gt; $dst:      $self isa &quot;$T&quot;
+</span><span>            +--- AST_STRUCT_FIELD
+</span><span>                 +--- _           =&gt; $optional: $self isa &quot;Self&quot;
+</span><span>                 +--- _           =&gt; $field:    $self == &quot;value&quot;
+</span><span>            ```
+</span><span>            repr: $dst = $optional!
+</span><span>            dst: expr
+</span><span>            optional: expr
+</span><span>            propagatable: true
+</span><span>            priority: 0
+</span><span>
+</span><span>        move_and_unwrap:
+</span><span>            from:
+</span><span>            ```
+</span><span>            MAP_FIELDS &quot;$T&quot;            =&gt; construct(&quot;$T&quot;) =&gt; $dst
+</span><span>            |
+</span><span>            +--- AST_DECL_ASSIGN
+</span><span>                 +--- _                =&gt; $dt:       $self == &quot;$field_type&quot;
+</span><span>                 +--- _                =&gt; accum():   $self isa &quot;$field_type&quot;
+</span><span>                 +--- AST_STRUCT_FIELD
+</span><span>                      +--- _           =&gt; $optional: $self isa &quot;Self&quot;
+</span><span>                      +--- _           =&gt; $field:    $self == &quot;value$field_name&quot;
+</span><span>            ```
+</span><span>            repr: `var` $dst: $T = $optional!
+</span><span>            dst: &quot;$T&quot;
+</span><span>            optional: expr
+</span><span>            propagatable: true
+</span><span>            priority: 0
+</span><span>            post_actions:
+</span><span>                * retype($dst, &quot;$T&quot;)
+</span></code></pre>
+<p>Gives us what we want:</p>
+<pre data-lang="Swift" style="background-color:#042029;color:#839496;" class="language-Swift "><code class="language-Swift" data-lang="Swift"><span style="color:#738a05;">func </span><span>FUN_100003aa0(p1: </span><span style="color:#859900;">Int</span><span>, p2: </span><span style="color:#859900;">Int</span><span>) </span><span style="color:#859900;">-&gt; Int </span><span>{
+</span><span>    </span><span style="color:#859900;">...
+</span><span>    </span><span style="color:#859900;">while</span><span> (</span><span style="color:#d33682;">0x1</span><span>) {
+</span><span>        </span><span style="color:#738a05;">let</span><span> v33 </span><span style="color:#859900;">=</span><span> v31</span><span style="color:#859900;">.</span><span>next()
+</span><span>        </span><span style="color:#859900;">if</span><span> (v33 </span><span style="color:#859900;">== </span><span>nil) {
+</span><span>            </span><span style="color:#859900;">break
+</span><span>        }
+</span><span>        </span><span style="color:#738a05;">var</span><span> (v21, v22): (</span><span style="color:#859900;">Int</span><span>, </span><span style="color:#859900;">Int</span><span>) </span><span style="color:#859900;">=</span><span> v33</span><span style="color:#859900;">!
+</span><span>        </span><span style="color:#859900;">...
+</span><span>        </span><span style="color:#859900;">if</span><span> (v36 </span><span style="color:#859900;">!= </span><span>nil) {
+</span><span>            v29 </span><span style="color:#859900;">=</span><span> v36</span><span style="color:#859900;">!
+</span><span>        }
+</span><span>        </span><span style="color:#859900;">else</span><span> {
+</span><span>            v29 </span><span style="color:#859900;">=</span><span> v22
+</span><span>        }
+</span><span>        </span><span style="color:#859900;">...
+</span><span>    }
+</span><span>    </span><span style="color:#859900;">...
+</span><span>}
+</span></code></pre>
+<p>Where the <code>MAP_FIELDS</code> node in the <code>move_and_unwrap</code> pattern is another meta-template which copies the <code>AST_DECL_ASSIGN</code> pattern for every field in the possibly compound optional-wrapped type.</p>
+<p>It replaces the <code>$field_name</code> and <code>$field_type</code> variables with the name and type of each field. Then the <code>accum()</code> action is called in the bound attribute of the variable so that the <code>construct</code> action can use all of the variables to construct the compound type.</p>
+<p>Writing this, I couldn't help but feel like I wanted an actual programming language. But I also really want to use this (or a better) pattern matching syntax. I could maybe get this to work with macros in Racket but if I'm going to rewrite in anything, I'm going to continue rewriting in Rust for performance.</p>
+<p>I can maybe make a worse eDSL with Rust macros but that is yet to be seen.</p>
+<p>The loop is now in a nice enough state that we can create a rule to make it more Swift-like:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>@type Iterator&lt;T&gt;: SwiftClass
+</span><span>    ...
+</span><span>
+</span><span>    ops:
+</span><span>        ...
+</span><span>
+</span><span>        loop:
+</span><span>            from:
+</span><span>            ```
+</span><span>            AST_LOOP
+</span><span>            |
+</span><span>            +--- _                                  =&gt; $dummy_cond: $self == &quot;0x1&quot;
+</span><span>            +--- AST_BLOCK
+</span><span>                 |
+</span><span>                 +--- AST_VOID_STMT
+</span><span>                      |
+</span><span>                      +--- &quot;Self_next&quot;              =&gt; $next_call
+</span><span>                           +--- _                   =&gt; $next_target
+</span><span>                           +--- _                   =&gt; $iter
+</span><span>                           +--- _                   =&gt; $elem
+</span><span>                 |
+</span><span>                 +--- AST_IF
+</span><span>                      |
+</span><span>                      +--- &quot;optional&lt;$T&gt;_nil_check&quot;
+</span><span>                           +--- _                   =&gt; $elem2:      $self == $elem
+</span><span>                      |
+</span><span>                      +--- AST_BLOCK
+</span><span>                           |
+</span><span>                           +--- AST_BREAK
+</span><span>                 |
+</span><span>                 +--- &quot;optional&lt;$T&gt;_move_and_unwrap&quot;
+</span><span>                      |
+</span><span>                      +--- _                        =&gt; $dst: $self isa &quot;$T&quot;
+</span><span>                      +--- _                        =&gt; $opt: $self == $elem
+</span><span>                 |
+</span><span>                 +--- *                             =&gt; $rest_of_body
+</span><span>            ```
+</span><span>            next_target:
+</span><span>                type: call_target
+</span><span>                repr: next
+</span><span>            iter: expr
+</span><span>            dst: expr
+</span><span>            rest_of_body: statement*
+</span><span>            repr:
+</span><span>            ```
+</span><span>            `while` `let` $dst = $iter.$next_target() {
+</span><span>                ${*rest_of_body&lt;CR&gt;}
+</span><span>            }
+</span><span>            ```
+</span><span>            priority: 0
+</span></code></pre>
+<p>Where I added support for matching on the generated rules <code>_nil_check</code> and <code>_move_and_unwrap</code> for brevity.</p>
+<p>This gets a little messy because we're mixing AST and CST patterns but it works somewhat nicely I think.</p>
+<p>However, I would also like to be able to write large patterns like this using the actual syntax generated. The only problem is that there can be ambiguity in the syntax which I'm not currently sure how to resolve.</p>
+<p>Regardless, this rule works nicely to create the iterator loop:</p>
+<pre data-lang="Swift" style="background-color:#042029;color:#839496;" class="language-Swift "><code class="language-Swift" data-lang="Swift"><span style="color:#738a05;">func </span><span>FUN_100003aa0(p1: </span><span style="color:#859900;">Int</span><span>, p2: </span><span style="color:#859900;">Int</span><span>) </span><span style="color:#859900;">-&gt; Int </span><span>{
+</span><span>    </span><span style="color:#859900;">...
+</span><span>    </span><span style="color:#859900;">while </span><span style="color:#738a05;">let</span><span> (v21, v22) </span><span style="color:#859900;">=</span><span> v31</span><span style="color:#859900;">.</span><span>next() {
+</span><span>        </span><span style="color:#859900;">...
+</span><span>        </span><span style="color:#738a05;">var</span><span> v29: </span><span style="color:#859900;">Int
+</span><span>        </span><span style="color:#859900;">if</span><span> (v36 </span><span style="color:#859900;">!= </span><span>nil) {
+</span><span>            v29 </span><span style="color:#859900;">=</span><span> v36</span><span style="color:#859900;">!
+</span><span>        }
+</span><span>        </span><span style="color:#859900;">else</span><span> {
+</span><span>            v29 </span><span style="color:#859900;">=</span><span> v22
+</span><span>        }
+</span><span>        </span><span style="color:#859900;">...
+</span><span>    }
+</span><span>    </span><span style="color:#859900;">...
+</span><span>}
+</span></code></pre>
+<p>Now we can simplify the if/else to the <code>??</code> operator:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>@type Optional&lt;T&gt;: SwiftClass
+</span><span>    ...
+</span><span>
+</span><span>    ops:
+</span><span>        ...
+</span><span>
+</span><span>        assign_with_default_value:
+</span><span>            from:
+</span><span>            ```
+</span><span>            AST_DECL
+</span><span>            +--- _                                =&gt; $decl_dt: $self == &quot;$T&quot;
+</span><span>            +--- _                                =&gt; $decl_var
+</span><span>            
+</span><span>            AST_IFELSE
+</span><span>            |
+</span><span>            +--- &quot;Self_nonnil_check&quot;
+</span><span>                 +--- _                           =&gt; $optional: $self isa &quot;Self&quot;
+</span><span>            |
+</span><span>            +--- AST_BLOCK
+</span><span>                 |
+</span><span>                 +--- &quot;Self_copy_and_unwrap&quot;
+</span><span>                      +--- _                      =&gt; $dst1:         $self == $decl_var
+</span><span>                      +--- _                      =&gt; $src_optional: $self == $optional
+</span><span>            |
+</span><span>            +--- AST_BLOCK
+</span><span>                 |
+</span><span>                 +--- AST_ASSIGN
+</span><span>                      +--- _                      =&gt; $assign_dt:    $self == &quot;$T&quot;
+</span><span>                      +--- _                      =&gt; $dst2:         $self == $decl_var
+</span><span>                      +--- _                      =&gt; $src_concrete: $self isa &quot;$T&quot;
+</span><span>            ```
+</span><span>            src_optional: expr
+</span><span>            src_concrete: expr
+</span><span>            repr: `var` $decl_var = $src_optional ?? $src_concrete
+</span><span>            decl_var: expr
+</span><span>            propagatable: true
+</span><span>            priority: 0
+</span></code></pre>
+<p>which simplifies the loop to:</p>
+<pre data-lang="Swift" style="background-color:#042029;color:#839496;" class="language-Swift "><code class="language-Swift" data-lang="Swift"><span style="color:#738a05;">func </span><span>FUN_100003aa0(p1: </span><span style="color:#859900;">Int</span><span>, p2: </span><span style="color:#859900;">Int</span><span>) </span><span style="color:#859900;">-&gt; Int </span><span>{
+</span><span>    </span><span style="color:#859900;">...
+</span><span>    </span><span style="color:#859900;">while </span><span style="color:#738a05;">let</span><span> (v21, v22) </span><span style="color:#859900;">=</span><span> v31</span><span style="color:#859900;">.</span><span>next() {
+</span><span>        </span><span style="color:#738a05;">var</span><span> v24: </span><span style="color:#859900;">Int =</span><span> v21
+</span><span>        </span><span style="color:#738a05;">var</span><span> v25: </span><span style="color:#859900;">Int =</span><span> v22
+</span><span>        </span><span style="color:#738a05;">var</span><span> v26: </span><span style="color:#859900;">Int =</span><span> v21
+</span><span>        </span><span style="color:#738a05;">let</span><span> v36 </span><span style="color:#859900;">=</span><span> dict[v26]
+</span><span>        </span><span style="color:#738a05;">var</span><span> v29 </span><span style="color:#859900;">=</span><span> v36 ?? v22
+</span><span>        </span><span style="color:#738a05;">var</span><span> v30: </span><span style="color:#859900;">Int =</span><span> v15 </span><span style="color:#859900;">+</span><span> v29
+</span><span>        </span><span style="color:#859900;">if</span><span> (v29 carry v15 </span><span style="color:#859900;">!= </span><span style="color:#d33682;">0x0</span><span>) {
+</span><span>            </span><span style="color:#859900;">while</span><span> (</span><span style="color:#d33682;">0x1</span><span>) {
+</span><span>
+</span><span>            }
+</span><span>        }
+</span><span>        v15 </span><span style="color:#859900;">=</span><span> v30
+</span><span>    }
+</span><span>    </span><span style="color:#859900;">...
+</span><span>}
+</span></code></pre>
+<p>We can also recognize that the <code>carry</code> check that causes an infinite loop if true is checking for overflow in the addition (it's really an undefined instruction but the SLEIGH library inserts an infinite loop).</p>
+<p>We can add a rule to the <code>Int</code> type which hides this:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>@type Int: SwiftClass = uint64_t
+</span><span>    ops:
+</span><span>        add_and_check_overflow:
+</span><span>            from:
+</span><span>            ```
+</span><span>            decl_assign_var         =&gt; $orig_expr
+</span><span>            +--- _                  =&gt; $dst:          $self isa &quot;Self&quot;
+</span><span>            +--- AST_BINARY         =&gt; $src:          ${self[op]} == &quot;+&quot;
+</span><span>                 +--- _             =&gt; $lhs:          $self isa &quot;Self&quot;
+</span><span>                 +--- _             =&gt; $rhs:          $self isa &quot;Self&quot;
+</span><span>            
+</span><span>            AST_IF
+</span><span>            |
+</span><span>            +--- AST_BINARY         =&gt; $neq_expr:     ${self[op]} == &quot;!=&quot;
+</span><span>                 +--- AST_BINARY    =&gt; $carry_expr:   ${self[op]} == &quot;carry&quot;
+</span><span>                      +--- _        =&gt; $lhs2:         $self == $rhs
+</span><span>                      +--- _        =&gt; $rhs2:         $self == $lhs
+</span><span>            |
+</span><span>            +--- AST_BLOCK
+</span><span>                 |
+</span><span>                 +--- AST_LOOP
+</span><span>                      |
+</span><span>                      +--- _         =&gt; $always_true: $self == &quot;0x1&quot;
+</span><span>                      +--- AST_BLOCK
+</span><span>            ```
+</span><span>            dst: expr
+</span><span>            src: expr
+</span><span>            repr: `var` $dst = $src
+</span><span>            propagatable: true
+</span><span>            priority: 0
+</span></code></pre>
+<p>Leaving us with a very clean loop:</p>
+<pre data-lang="Swift" style="background-color:#042029;color:#839496;" class="language-Swift "><code class="language-Swift" data-lang="Swift"><span style="color:#738a05;">func </span><span>FUN_100003aa0(p1: </span><span style="color:#859900;">Int</span><span>, p2: </span><span style="color:#859900;">Int</span><span>) </span><span style="color:#859900;">-&gt; Int </span><span>{
+</span><span>    </span><span style="color:#738a05;">var</span><span> v1: </span><span style="color:#859900;">Int =</span><span> p2
+</span><span>    </span><span style="color:#738a05;">var</span><span> v2: </span><span style="color:#859900;">Int =</span><span> p1
+</span><span>    </span><span style="color:#859900;">...
+</span><span>    </span><span style="color:#738a05;">var</span><span> v3: </span><span style="color:#859900;">Int =</span><span> v2
+</span><span>    </span><span style="color:#738a05;">var</span><span> v4: </span><span style="color:#859900;">Int =</span><span> v1
+</span><span>    </span><span style="color:#738a05;">var</span><span> dict: [</span><span style="color:#859900;">Int</span><span>:</span><span style="color:#859900;">Int</span><span>] </span><span style="color:#859900;">=</span><span> [</span><span style="color:#859900;">Int</span><span>:</span><span style="color:#859900;">Int</span><span>]()
+</span><span>    </span><span style="color:#738a05;">var</span><span> v6: </span><span style="color:#859900;">Int</span><span>? </span><span style="color:#859900;">=</span><span> v2
+</span><span>    </span><span style="color:#738a05;">var</span><span> v8: </span><span style="color:#859900;">Int = </span><span style="color:#d33682;">0x1
+</span><span>    dict[v8] </span><span style="color:#859900;">=</span><span> v6
+</span><span>    </span><span style="color:#738a05;">var</span><span> v12: </span><span style="color:#859900;">Int</span><span>? </span><span style="color:#859900;">=</span><span> v1
+</span><span>    </span><span style="color:#738a05;">var</span><span> v14: </span><span style="color:#859900;">Int = </span><span style="color:#d33682;">0x2
+</span><span>    dict[v14] </span><span style="color:#859900;">=</span><span> v12
+</span><span>    </span><span style="color:#738a05;">var</span><span> v15: </span><span style="color:#859900;">Int = </span><span style="color:#d33682;">0x0
+</span><span>    </span><span style="color:#738a05;">let</span><span> v32 </span><span style="color:#859900;">=</span><span> dict</span><span style="color:#859900;">.</span><span>makeIterator()
+</span><span>    </span><span style="color:#738a05;">var</span><span> v31: Iterator</span><span style="color:#859900;">&lt;</span><span>(</span><span style="color:#859900;">Int</span><span>, </span><span style="color:#859900;">Int</span><span>)</span><span style="color:#859900;">&gt; =</span><span> v32
+</span><span>    </span><span style="color:#859900;">while </span><span style="color:#738a05;">let</span><span> (v20, v21) </span><span style="color:#859900;">=</span><span> v31</span><span style="color:#859900;">.</span><span>next() {
+</span><span>        </span><span style="color:#738a05;">var</span><span> v23: </span><span style="color:#859900;">Int =</span><span> v20
+</span><span>        </span><span style="color:#738a05;">var</span><span> v24: </span><span style="color:#859900;">Int =</span><span> v21
+</span><span>        </span><span style="color:#738a05;">var</span><span> v25: </span><span style="color:#859900;">Int =</span><span> v20
+</span><span>        </span><span style="color:#738a05;">let</span><span> v36 </span><span style="color:#859900;">=</span><span> dict[v25]
+</span><span>        </span><span style="color:#738a05;">var</span><span> v28 </span><span style="color:#859900;">=</span><span> v36 ?? v21
+</span><span>        </span><span style="color:#738a05;">var</span><span> v29 </span><span style="color:#859900;">=</span><span> v15 </span><span style="color:#859900;">+</span><span> v28
+</span><span>        v15 </span><span style="color:#859900;">=</span><span> v29
+</span><span>    }
+</span><span>    </span><span style="color:#859900;">...
+</span><span>}
+</span></code></pre>
+<p>This result is pretty good but it could benefit from some variable propagation, e.g. to simplify</p>
+<pre data-lang="Swift" style="background-color:#042029;color:#839496;" class="language-Swift "><code class="language-Swift" data-lang="Swift"><span style="color:#738a05;">var</span><span> v2: </span><span style="color:#859900;">Int =</span><span> p1
+</span><span style="color:#859900;">...
+</span><span style="color:#738a05;">var</span><span> v6: </span><span style="color:#859900;">Int</span><span>? </span><span style="color:#859900;">=</span><span> v2
+</span><span style="color:#738a05;">var</span><span> v8: </span><span style="color:#859900;">Int = </span><span style="color:#d33682;">0x1
+</span><span>dict[v8] </span><span style="color:#859900;">=</span><span> v6
+</span></code></pre>
+<p>to</p>
+<pre data-lang="Swift" style="background-color:#042029;color:#839496;" class="language-Swift "><code class="language-Swift" data-lang="Swift"><span>dict[</span><span style="color:#d33682;">0x1</span><span>] </span><span style="color:#859900;">=</span><span> p1
+</span></code></pre>
+<p>In addition, variables <code>v23</code> and <code>v24</code> are not used so they should be removed.</p>
+<p>I thought about solving this at the lower-levels of the analysis pipeline since they already perform these types of simplifications but I settled on doing this at the CST level since then we can propagate assigns like <code>v6 = v2</code> even though <code>v6</code> is an <code>Int?</code> which is a struct under the hood and <code>v2</code> is an <code>Int</code>.</p>
+<p>To do this, I had to add some level of semantic information to the rule definitions so the simplifier knows which nodes are inputs and which nodes are outputs.</p>
+<p>Here is an example of those annotations:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>swift_assign:
+</span><span>    repr: $var = $value
+</span><span>    var: var(out)
+</span><span>    value: expr(in)
+</span><span>    priority: 1
+</span><span>    propagatable: true
+</span><span>    from: AST_ASSIGN
+</span></code></pre>
+<p>Using this, I can now perform simple assign propagation/dead store elimination and end up with the following result (also adding rules to hide the <code>memset</code> calls and create a <code>+=</code> operator among other things):</p>
+<pre data-lang="Swift" style="background-color:#042029;color:#839496;" class="language-Swift "><code class="language-Swift" data-lang="Swift"><span style="color:#738a05;">func </span><span>FUN_100003aa0(p1: </span><span style="color:#859900;">Int</span><span>, p2: </span><span style="color:#859900;">Int</span><span>) </span><span style="color:#859900;">-&gt; Int </span><span>{
+</span><span>    </span><span style="color:#738a05;">var</span><span> dict </span><span style="color:#859900;">=</span><span> [</span><span style="color:#859900;">Int</span><span>:</span><span style="color:#859900;">Int</span><span>]()
+</span><span>    dict[</span><span style="color:#d33682;">0x1</span><span>] </span><span style="color:#859900;">=</span><span> p1
+</span><span>    dict[</span><span style="color:#d33682;">0x2</span><span>] </span><span style="color:#859900;">=</span><span> p2
+</span><span>    </span><span style="color:#738a05;">var</span><span> v15 </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0
+</span><span>    </span><span style="color:#738a05;">let</span><span> v32 </span><span style="color:#859900;">=</span><span> dict</span><span style="color:#859900;">.</span><span>makeIterator()
+</span><span>    </span><span style="color:#859900;">while </span><span style="color:#738a05;">let</span><span> (v20, v21) </span><span style="color:#859900;">=</span><span> v32</span><span style="color:#859900;">.</span><span>next() {
+</span><span>        v15 </span><span style="color:#859900;">+=</span><span> dict[v20] ?? v21
+</span><span>    }
+</span><span>    </span><span style="color:#859900;">return</span><span> v15
+</span><span>}
+</span></code></pre>
+<p>Now that <code>v31</code> got propagated to <code>v32</code>, we can write a rule to match the <code>makeIterator</code>, <code>while let _ = iter.next()</code> pattern for the <code>Dictionary</code> type:</p>
+<pre style="background-color:#042029;color:#839496;"><code><span>@type Dictionary&lt;K, V&gt;: SwiftClass
+</span><span>    ...
+</span><span>
+</span><span>    ops:
+</span><span>        ...
+</span><span>        loop:
+</span><span>            from:
+</span><span>            ```
+</span><span>            &quot;Self_make_iter&quot;
+</span><span>            |
+</span><span>            +--- _
+</span><span>            +--- _
+</span><span>            +--- _ =&gt; $iter
+</span><span>            +--- _ =&gt; $dict
+</span><span>            
+</span><span>            &quot;iterator&lt;tuple2&lt;$K, $V&gt;&gt;_loop&quot;
+</span><span>            |
+</span><span>            +--- _
+</span><span>            +--- _ =&gt; $iter2: $self == $iter
+</span><span>            +--- _ =&gt; $dst
+</span><span>            +--- _ =&gt; $body
+</span><span>            ```
+</span><span>            dict: expr(in)
+</span><span>            dst: &quot;Tuple2&lt;$K, $V&gt;&quot;(out)
+</span><span>            body: statement*
+</span><span>            repr:
+</span><span>            ```
+</span><span>            `for` $dst `in` $dict {
+</span><span>                ${*body&lt;CR&gt;}
+</span><span>            }
+</span><span>            ```
+</span><span>            priority: 0
+</span><span>            post_actions:
+</span><span>                * rename($dst.0, &quot;key&quot;)
+</span><span>                * rename($dst.1, &quot;value&quot;)
+</span></code></pre>
+<p>which gives us the result I initially teased:</p>
+<pre data-lang="Swift" style="background-color:#042029;color:#839496;" class="language-Swift "><code class="language-Swift" data-lang="Swift"><span style="color:#738a05;">func </span><span>FUN_100003aa0(p1: </span><span style="color:#859900;">Int</span><span>, p2: </span><span style="color:#859900;">Int</span><span>) </span><span style="color:#859900;">-&gt; Int </span><span>{
+</span><span>    </span><span style="color:#738a05;">var</span><span> dict </span><span style="color:#859900;">=</span><span> [</span><span style="color:#859900;">Int</span><span>:</span><span style="color:#859900;">Int</span><span>]()
+</span><span>    dict[</span><span style="color:#d33682;">0x1</span><span>] </span><span style="color:#859900;">=</span><span> p1
+</span><span>    dict[</span><span style="color:#d33682;">0x2</span><span>] </span><span style="color:#859900;">=</span><span> p2
+</span><span>    </span><span style="color:#738a05;">var</span><span> v15 </span><span style="color:#859900;">= </span><span style="color:#d33682;">0x0
+</span><span>    </span><span style="color:#859900;">for</span><span> (key, value) </span><span style="color:#859900;">in</span><span> dict {
+</span><span>        v15 </span><span style="color:#859900;">+=</span><span> dict[key] ?? value
+</span><span>    }
+</span><span>    </span><span style="color:#859900;">return</span><span> v15
+</span><span>}
+</span></code></pre>
+<h2 id="conclusion">Conclusion</h2>
+<p>I don't know about you, but I think this is pretty darn cool. We were able to almost fully recover the original source, including the higher-level types and Swift-specific control flow structures.</p>
+<p>That being said, I was definitely running into the limitations of the DSL a lot while doing this (hence all of the changes I made to it).</p>
+<p>This makes me worried about continuing my Rust rewrite since in my experience, it's more difficult to refactor Rust code radically and I'm sure I'll need to add new features to support new language features. Although it could very well be that I'm less experienced with Rust and don't know how to fully wield it.</p>
+<p>In general, I think that the new features I added, specifically being able to define your own (generic) data types, will help in the decompilation of other languages but we'll see. I would like to clean up the code/make it more robust but I don't want to do that until I feel I have a good foundation that I can write language definitions on top of.</p>
+<p>Anyways, I hope you enjoyed another way-too-long post and make sure to stay tuned for further developments (maybe one day I'll actually release some code!).</p>
+</div>
+
+  <p class="meta">Posted on <span class="postdate">2024-04-02</span></p>
+</article>
+
+      </div>
+      <footer id="footer">
+        <p class="copyright">
+          
+            Powered by <a href="https://www.getzola.org/">Zola</a> and the
+            <a href="https://github.com/hulufei/solar-theme-zola">Solar</a>-theme.
+          
+        </p>
+      </footer>
+    </div>
+  </body>
+</html>
